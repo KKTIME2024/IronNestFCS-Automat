@@ -32,6 +32,10 @@ public class FSC
 
     // 驻留装药补给:装药低于阈值时每 5s 补一包(deskLock 保护),与任务内购买互补。
     private const float PowderCheckInterval = 5f;
+    // 有界等待(2026-08-16 最小安全网): 等待必有超时, 超时干净收敛 + 诊断, 不靠看门狗兜底
+    private const float LockWaitTimeoutSec = 60f;    // 瞄准段等炮塔锁上限
+    private const float PartnerWaitTimeoutSec = 20f; // 非持锁者等持锁者击发上限
+    private const float WaitFireTimeoutSec = 20f;    // 击发后等退膛上限
     private const int PowderReplenishThreshold = 6;
 
     private HarmonyInstance? _harmony;
@@ -1059,7 +1063,16 @@ public class FSC
                         : Mathf.Min(6, TargetLeadSolver.ChargeFor(
                             dLead + (task.IsMoving ? MovingDistanceMarginKm : 0f)));
                     int chamberCharges = gunSys.ChamberCharges();
-                    if (chamberCharges >= needCharges)
+                    if (chamberCharges < 0)
+                    {
+                        // 装药读取失败(-1) ≠ 装药不足(2026-08-16): 不退壳不重装(破坏性且无效——
+                        // 读取失败会随退壳重装一直失败, 造成无限循环)。按估算装药复用, 交给游戏验证:
+                        // 真不足则游戏拒发 → 有界 WaitFire 超时兜底并打出膛内快照诊断。
+                        MelonLogger.Warning($"[FCS] {leftRight} 膛内装药读取失败(-1): 不退壳, 按估算装药 {needCharges} 复用(游戏验证兜底)");
+                        reuseReady = true;
+                        task.LoadedCharge = needCharges;
+                    }
+                    else if (chamberCharges >= needCharges)
                     {
                         // 装药够 → 复用。仰角按实际装药定格(装药多则调低, 打准)。
                         if (chamberCharges > needCharges)
@@ -1210,13 +1223,21 @@ public class FSC
             // 两管任务同时进击发段 = 双管齐射。锁由后台持有到击发完成(ReleaseTurretOnce)。
             // 仰角杆每管独立——等锁期间照样追仰角(与另一管并行), 只有方位/击发段被锁串行化。
             task.progress = Progress.Aiming;
+            var lockWaitDeadline = Time.time + LockWaitTimeoutSec;   // 有界等待(2026-08-16)
             // 同方位齐射门: 另一管与本管目标方位差 ≤ 容差 → 放行, 两管都进击发流程,
             // 玩家拉一次扳机 = 双弹齐射(如 AP+HE 打同一目标)。不同方位仍等锁串行——
             // 座圈只能一个方向, 齐射必一发偏; 放行后两管驱动同一方位值, 不抢舵。
-            while (!turret.Acquired && !SameBearingAsOther()) {
+            while (!turret.Acquired && !SameBearingAsOther() && Time.time < lockWaitDeadline) {
                 TryComputeAimTargets(task, out _, out var elev);
                 gunSys.SetElevationTarget(elev);
                 yield return null;
+            }
+            if (!turret.Acquired && !SameBearingAsOther())
+            {
+                // 有界等待(2026-08-16): 锁被另一管长期持有(卡死)时不再无限等, 干净放弃让调度重试
+                MelonLogger.Error($"[FCS] {leftRight} 等炮塔锁超时 {LockWaitTimeoutSec}s, 放弃任务(另一管长期持锁?)");
+                task.progress = Progress.Failed;
+                yield break;
             }
             turret.Aiming = true;   // 主流程接管方位(后台停止驱动)
             MelonLogger.Msg($"[FCS] {leftRight} 炮塔锁已持有, 进入瞄准/击发段");
@@ -1388,11 +1409,22 @@ public class FSC
                     if (turret.Acquired) {
                         // 只有持锁者拉扳机——全局扳机击发所有已武装炮管, 同方位齐射由它一并带出
                         TriggerConsole.Fire();
-                        yield return gunSys.WaitFire();
+                        // 有界等退膛(2026-08-16): 游戏拒发(膛内状态非法)时不再永久挂起
+                        var fireDeadline = Time.time + WaitFireTimeoutSec;
+                        while (!gunSys.IsPendingReload() && Time.time < fireDeadline)
+                            yield return null;
+                        if (!gunSys.IsPendingReload())
+                        {
+                            MelonLogger.Error($"[FCS] {leftRight} 击发后 {WaitFireTimeoutSec}s 未进入退膛(游戏拒发?), 放弃。膛内: 弹={gunSys.BulletInChamber() ?? "null"} 装药={gunSys.ChamberCharges()} CanFire={gunSys.CanFire()}");
+                            task.progress = Progress.Failed;
+                            yield break;
+                        }
                     } else {
                         // 同方位非持锁者: 已武装, 等持锁者击发带自己(直接 Fire 会双重 AddEnergy);
-                        // 持锁者若瞄准失败放弃 → 自己拿到锁后兜底击发, 防 AutoFire 下永久挂起
-                        while (!gunSys.IsPendingReload() && !turret.Acquired) {
+                        // 持锁者若瞄准失败放弃 → 自己拿到锁后兜底击发, 防 AutoFire 下永久挂起。
+                        // 有界等待(2026-08-16): 持锁者停滞(装填卡死等)时不再无限挂, 超时干净放弃。
+                        var partnerDeadline = Time.time + PartnerWaitTimeoutSec;
+                        while (!gunSys.IsPendingReload() && !turret.Acquired && Time.time < partnerDeadline) {
                             TryComputeAimTargets(task, out var b, out var e);
                             Turret.SetDesiredRotation(b);
                             gunSys.SetElevationTarget(e);
@@ -1400,7 +1432,19 @@ public class FSC
                         }
                         if (!gunSys.IsPendingReload() && turret.Acquired) {
                             TriggerConsole.Fire();
-                            yield return gunSys.WaitFire();
+                            var fireDeadline = Time.time + WaitFireTimeoutSec;
+                            while (!gunSys.IsPendingReload() && Time.time < fireDeadline)
+                                yield return null;
+                            if (!gunSys.IsPendingReload())
+                            {
+                                MelonLogger.Error($"[FCS] {leftRight} 击发后 {WaitFireTimeoutSec}s 未进入退膛(游戏拒发?), 放弃。膛内: 弹={gunSys.BulletInChamber() ?? "null"} 装药={gunSys.ChamberCharges()} CanFire={gunSys.CanFire()}");
+                                task.progress = Progress.Failed;
+                                yield break;
+                            }
+                        } else if (!gunSys.IsPendingReload()) {
+                            MelonLogger.Error($"[FCS] {leftRight} 等持锁者击发超时 {PartnerWaitTimeoutSec}s, 放弃(持锁者停滞?)");
+                            task.progress = Progress.Failed;
+                            yield break;
                         }
                     }
                 } else {
@@ -1488,7 +1532,7 @@ public class FSC
         }
         while (!res.Released) {
             // 主流程未接管前持续追方位(装填期+等锁期); 拿到锁接管后(Aiming)停止。
-            if (!res.Aiming && TryGetMovingBearing(task, out var bearing))
+            if (!res.Aiming && TryGetTaskBearing(task, out var bearing))
                 Turret.SetDesiredRotation(bearing);
             yield return null;
         }
@@ -1604,14 +1648,18 @@ public class FSC
         return gunSys.ElevationError(elev) < tol && Turret.AngleError(bearing) < tol;
     }
 
-    /// <summary>移动目标当前方位（提前点方向, 冻结快照外推）。非移动返回 false。</summary>
-    private bool TryGetMovingBearing(ArtilleryTask task, out float bearing) {
+    /// <summary>装填期炮塔方位(后台预约协程用): 静态=任务方位; 移动=提前点方位(冻结快照外推)。
+    /// 2026-08-16 用户要求: 方向机从装填期(含 WaitLoading)开始驱动——静态目标不再等到 Aiming 才转,
+    /// 装填与转向重叠, 装填完方位已就位(此前静态返回 false → 装填完才大角度追)。</summary>
+    private bool TryGetTaskBearing(ArtilleryTask task, out float bearing) {
         AdoptVelocityIfNeeded(task);   // 装填期采纳: 炮塔尽早转向提前方位, 避免装填完再大角度追
         bearing = task.angel;
-        if (!task.IsMoving || !TargetLeadSolver.IsMoving(task.AimVel)) return false;
-        var tof = ToFTable.FlightTime(task.distance, task.LoadedCharge);
-        bearing = Bearing(TargetLeadSolver.LeadPoint(task.AimP0, task.AimVel,
-            Time.time - task.AimStartTime, tof));
+        if (task.IsMoving && TargetLeadSolver.IsMoving(task.AimVel))
+        {
+            var tof = ToFTable.FlightTime(task.distance, task.LoadedCharge);
+            bearing = Bearing(TargetLeadSolver.LeadPoint(task.AimP0, task.AimVel,
+                Time.time - task.AimStartTime, tof));
+        }
         return true;
     }
 
