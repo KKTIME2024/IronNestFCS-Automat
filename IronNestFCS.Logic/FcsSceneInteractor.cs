@@ -25,13 +25,37 @@ public class FcsSceneInteractor {
     public bool AutoFire = false;
     public bool maxCharge = false;
 
+    private MelonPreferences_Category? _prefs;
+    private MelonPreferences_Entry<bool>? _autoFirePref;
+    private MelonPreferences_Entry<bool>? _maxChargePref;
+
     public FcsSceneInteractor(FSC fcs) {
         this.fcs = fcs;
     }
 
     public void Initialize() {
+        LoadPrefs();
         InitializeBulletTypeButtons();
         InitializeTargetButtons();
+    }
+
+    /// <summary>
+    /// 开关持久化: F9 热重载会重建本实例, 不落盘则 AutoFire/MaxCharge 每次重载都回默认。
+    /// 2026-08-16 实测灾难: AutoFire 重置为关 → 任务武装后等玩家手动扳机 120s → 看门狗杀掉,
+    /// 且等待期间炮塔锁一直被持 → 另一管等锁超时饿死两轮。
+    /// </summary>
+    private void LoadPrefs() {
+        try {
+            _prefs = MelonPreferences.CreateCategory("IronNestFCS");
+            _autoFirePref = _prefs.GetEntry<bool>("AutoFire") ?? _prefs.CreateEntry("AutoFire", false);
+            _maxChargePref = _prefs.GetEntry<bool>("MaxCharge") ?? _prefs.CreateEntry("MaxCharge", false);
+            AutoFire = _autoFirePref.Value;
+            maxCharge = _maxChargePref.Value;
+            _prefs.SaveToFile();
+        }
+        catch (System.Exception ex) {
+            MelonLogger.Warning($"[FCS] 偏好读取失败: {ex.Message}");
+        }
     }
 
     private void InitializeBulletTypeButtons() {
@@ -72,6 +96,7 @@ public class FcsSceneInteractor {
         GameObject? autoFireButton = null;
         autoFireButton = AddButton(() => {
             AutoFire = !AutoFire;
+            if (_autoFirePref != null) { _autoFirePref.Value = AutoFire; _prefs?.SaveToFile(); }
             SetColor(autoFireButton, AutoFire ? Color.red : Color.white);
         }, AutoFire ? Color.red : Color.white);
         autoFireButton.transform.position = new Vector3(x, y, z);
@@ -87,6 +112,7 @@ public class FcsSceneInteractor {
         GameObject maxChargeButton = null;
         maxChargeButton = AddButton(() => {
             maxCharge = !maxCharge;
+            if (_maxChargePref != null) { _maxChargePref.Value = maxCharge; _prefs?.SaveToFile(); }
             SetColor(maxChargeButton, maxCharge ? Color.red : Color.white);
         }, maxCharge ? Color.red : Color.white);
         maxChargeButton.transform.position = new Vector3(x, y, z);

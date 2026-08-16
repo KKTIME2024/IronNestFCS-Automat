@@ -172,6 +172,9 @@ public class FSC
                   && TriggerConsole.TryBind();
         MelonLogger.Msg("[FCS] Initialize: " + (IsBound ? "success" : "failed"));
         if (IsBound) {
+            MelonLogger.Msg($"[FCS] AutoFire={(_sceneInteractor.AutoFire ? "开" : "关")} " +
+                            $"MaxCharge={(_sceneInteractor.maxCharge ? "开" : "关")}" +
+                            (_sceneInteractor.AutoFire ? "" : " —— 注意: 关=武装后等玩家手动扳机(勿误以为卡死)"));
             CacheAimGeometry();   // 连续瞄准几何缓存(一次, 避免每帧 GameObject.Find)
             // 驻留装药补给协程:保证装药充足,减少任务内等待购买。
             _runningCoroutines.Add(MelonCoroutines.Start(ReplenishPowderLoop()));
@@ -1398,83 +1401,32 @@ public class FSC
 
             // ===== 击发（turret 锁仍由后台持有, 直接确认+击发）=====
             task.progress = Progress.WaitingForFire;
-            try {
-                // 臂杆按下与 5 个确认并行(开关是纯 0/1 flag, 一口气点完, 在臂杆保持期内完成)。
-                // 臂杆自动拉下 = 该炮管就绪(此刻方位/仰角已收敛, 不会在错误方向角臂下)
-                yield return TriggerConsole.ArmWithFastConfirm(leftRight);
-                if (_sceneInteractor.AutoFire || task.forceFire) {
-                    // 确认序列 ~3-4s 期间 aim 漂移(机构追着走); 复检对齐后再打(5s 内追上, 否则尽力打)
-                    var recheckStart = Time.time;
-                    while (!AlignOk(task, gunSys, AimToleranceDeg) && Time.time - recheckStart < 5f) yield return null;
-                    if (turret.Acquired) {
-                        // 只有持锁者拉扳机——全局扳机击发所有已武装炮管, 同方位齐射由它一并带出
-                        TriggerConsole.Fire();
-                        // 有界等退膛(2026-08-16): 游戏拒发(膛内状态非法)时不再永久挂起
-                        var fireDeadline = Time.time + WaitFireTimeoutSec;
-                        while (!gunSys.IsPendingReload() && Time.time < fireDeadline)
-                            yield return null;
-                        if (!gunSys.IsPendingReload())
-                        {
-                            MelonLogger.Error($"[FCS] {leftRight} 击发后 {WaitFireTimeoutSec}s 未进入退膛(游戏拒发?), 放弃。膛内: 弹={gunSys.BulletInChamber() ?? "null"} 装药={gunSys.ChamberCharges()} CanFire={gunSys.CanFire()}");
-                            task.progress = Progress.Failed;
-                            yield break;
-                        }
-                    } else {
-                        // 同方位非持锁者: 已武装, 等持锁者击发带自己(直接 Fire 会双重 AddEnergy);
-                        // 持锁者若瞄准失败放弃 → 自己拿到锁后兜底击发, 防 AutoFire 下永久挂起。
-                        // 有界等待(2026-08-16): 持锁者停滞(装填卡死等)时不再无限挂, 超时干净放弃。
-                        var partnerDeadline = Time.time + PartnerWaitTimeoutSec;
-                        while (!gunSys.IsPendingReload() && !turret.Acquired && Time.time < partnerDeadline) {
-                            TryComputeAimTargets(task, out var b, out var e);
-                            Turret.SetDesiredRotation(b);
-                            gunSys.SetElevationTarget(e);
-                            yield return null;
-                        }
-                        if (!gunSys.IsPendingReload() && turret.Acquired) {
-                            TriggerConsole.Fire();
-                            var fireDeadline = Time.time + WaitFireTimeoutSec;
-                            while (!gunSys.IsPendingReload() && Time.time < fireDeadline)
-                                yield return null;
-                            if (!gunSys.IsPendingReload())
-                            {
-                                MelonLogger.Error($"[FCS] {leftRight} 击发后 {WaitFireTimeoutSec}s 未进入退膛(游戏拒发?), 放弃。膛内: 弹={gunSys.BulletInChamber() ?? "null"} 装药={gunSys.ChamberCharges()} CanFire={gunSys.CanFire()}");
-                                task.progress = Progress.Failed;
-                                yield break;
-                            }
-                        } else if (!gunSys.IsPendingReload()) {
-                            MelonLogger.Error($"[FCS] {leftRight} 等持锁者击发超时 {PartnerWaitTimeoutSec}s, 放弃(持锁者停滞?)");
-                            task.progress = Progress.Failed;
-                            yield break;
-                        }
-                    }
-                } else {
-                    // AutoFire 关: 持续跟踪 aim(t) 直到玩家扳机——否则炮管停在旧点, 移动目标必偏。
-                    // 静态任务此循环目标值恒定, 退化为无操作等待。
-                    while (!gunSys.IsPendingReload()) {
-                        TryComputeAimTargets(task, out var b, out var e);
-                        Turret.SetDesiredRotation(b);
-                        gunSys.SetElevationTarget(e);
-                        yield return null;
-                    }
-                }
-                // 爆区覆盖: 落点 = 静态任务目标/集群质心, 移动任务提前点; 半径 = 该弹毁伤半径
-                Vector3 impactPos = task.position;
-                if (task.IsMoving && TargetLeadSolver.IsMoving(task.AimVel))
-                {
-                    var tof = ToFTable.FlightTime(task.distance, task.LoadedCharge);
-                    impactPos = TargetLeadSolver.LeadPoint(task.AimP0, task.AimVel,
-                        Time.time - task.AimStartTime, tof);
-                }
-                float blastKm = task.BlastRadiusKm > 0f ? task.BlastRadiusKm : ShellData.BlastRadiusKm(task.bulletType);
-                task.Fired = true;
-                task.FiredAt = Time.time;
-                Registry.MarkFiredBlast(task, impactPos, blastKm);
-                // 集群成员派发时已登记(Commit), 击发无需再登记
-                InFlight.Add(task);   // 面板倒计时从这里开始, 归零(估计落地)时移除
+            var firePhase = new FirePhaseOutcome();
+            yield return RunFirePhase(task, leftRight, turret, gunSys, firePhase);
+            // 武装过但未击发(中止/拒发/看门狗取消) → 开关翻回中立, 防下次武装翻转拒发
+            // (2026-08-16 实测: 开关是 0/1 翻转式, 残留"已武装"会让下次武装翻成"未武装" → 游戏拒发)。
+            if (firePhase.Armed && !firePhase.Fired) {
+                MelonLogger.Warning($"[FCS] {leftRight} 未击发中止, 复位臂杆/确认开关");
+                yield return TriggerConsole.Unarm(leftRight);
             }
-            finally {
-                ReleaseTurretOnce(turret);
+            if (firePhase.TerminalProgress.HasValue) {
+                task.progress = firePhase.TerminalProgress.Value;
+                yield break;
             }
+            // 爆区覆盖: 落点 = 静态任务目标/集群质心, 移动任务提前点; 半径 = 该弹毁伤半径
+            Vector3 impactPos = task.position;
+            if (task.IsMoving && TargetLeadSolver.IsMoving(task.AimVel))
+            {
+                var tof = ToFTable.FlightTime(task.distance, task.LoadedCharge);
+                impactPos = TargetLeadSolver.LeadPoint(task.AimP0, task.AimVel,
+                    Time.time - task.AimStartTime, tof);
+            }
+            float blastKm = task.BlastRadiusKm > 0f ? task.BlastRadiusKm : ShellData.BlastRadiusKm(task.bulletType);
+            task.Fired = true;
+            task.FiredAt = Time.time;
+            Registry.MarkFiredBlast(task, impactPos, blastKm);
+            // 集群成员派发时已登记(Commit), 击发无需再登记
+            InFlight.Add(task);   // 面板倒计时从这里开始, 归零(估计落地)时移除
 
             // ===== 锁外：回位（仰角回 0，每管炮独立，最耗时段之一）=====
             task.progress = Progress.BackToIdle;
@@ -1500,6 +1452,99 @@ public class FSC
             _taskTurretRes.Remove(task);   // 看门狗映射清理
             // 通知雷达：有一门炮退膛完毕，可以刷新队列了
             try { OnGunIdle?.Invoke(); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// 击发段结果回传: Armed=执行过武装(中止时父协程需 Unarm 复位); Fired=击发成功;
+    /// TerminalProgress 非空 = 放弃(父协程置该进度并退出)。
+    /// </summary>
+    private sealed class FirePhaseOutcome {
+        public bool Armed;
+        public bool Fired;
+        public Progress? TerminalProgress;
+    }
+
+    /// <summary>
+    /// 击发段子协程: 武装+确认+击发+有界等待。try/finally 保证炮塔锁归还。
+    /// (C# 迭代器 finally 不能 yield → Unarm 复位交给父协程在返回后执行。)
+    /// 终止路径只置 TerminalProgress, 由父协程统一收尾。
+    /// </summary>
+    private IEnumerator RunFirePhase(ArtilleryTask task, LeftRight leftRight,
+        TurretReservation turret, GunSystem gunSys, FirePhaseOutcome outcome)
+    {
+        try {
+            // 臂杆按下与 5 个确认并行(开关是纯 0/1 flag, 一口气点完, 在臂杆保持期内完成)。
+            // 臂杆自动拉下 = 该炮管就绪(此刻方位/仰角已收敛, 不会在错误方向角臂下)
+            outcome.Armed = true;
+            yield return TriggerConsole.ArmWithFastConfirm(leftRight);
+            if (task.Canceled) { outcome.TerminalProgress = Progress.Canceled; yield break; }
+            if (_sceneInteractor.AutoFire || task.forceFire) {
+                // 确认序列 ~3-4s 期间 aim 漂移(机构追着走); 复检对齐后再打(5s 内追上, 否则尽力打)
+                var recheckStart = Time.time;
+                while (!AlignOk(task, gunSys, AimToleranceDeg) && !task.Canceled && Time.time - recheckStart < 5f) yield return null;
+                if (task.Canceled) { outcome.TerminalProgress = Progress.Canceled; yield break; }
+                if (turret.Acquired) {
+                    // 只有持锁者拉扳机——全局扳机击发所有已武装炮管, 同方位齐射由它一并带出
+                    TriggerConsole.Fire();
+                    // 有界等退膛(2026-08-16): 游戏拒发(膛内状态非法)时不再永久挂起
+                    var fireDeadline = Time.time + WaitFireTimeoutSec;
+                    while (!gunSys.IsPendingReload() && !task.Canceled && Time.time < fireDeadline)
+                        yield return null;
+                    if (task.Canceled) { outcome.TerminalProgress = Progress.Canceled; yield break; }
+                    if (!gunSys.IsPendingReload())
+                    {
+                        MelonLogger.Error($"[FCS] {leftRight} 击发后 {WaitFireTimeoutSec}s 未进入退膛(游戏拒发?), 放弃。膛内: 弹={gunSys.BulletInChamber() ?? "null"} 装药={gunSys.ChamberCharges()} CanFire={gunSys.CanFire()}");
+                        outcome.TerminalProgress = Progress.Failed;
+                        yield break;
+                    }
+                } else {
+                    // 同方位非持锁者: 已武装, 等持锁者击发带自己(直接 Fire 会双重 AddEnergy);
+                    // 持锁者若瞄准失败放弃 → 自己拿到锁后兜底击发, 防 AutoFire 下永久挂起。
+                    // 有界等待(2026-08-16): 持锁者停滞(装填卡死等)时不再无限挂, 超时干净放弃。
+                    var partnerDeadline = Time.time + PartnerWaitTimeoutSec;
+                    while (!gunSys.IsPendingReload() && !turret.Acquired && !task.Canceled && Time.time < partnerDeadline) {
+                        TryComputeAimTargets(task, out var b, out var e);
+                        Turret.SetDesiredRotation(b);
+                        gunSys.SetElevationTarget(e);
+                        yield return null;
+                    }
+                    if (task.Canceled) { outcome.TerminalProgress = Progress.Canceled; yield break; }
+                    if (!gunSys.IsPendingReload() && turret.Acquired) {
+                        TriggerConsole.Fire();
+                        var fireDeadline = Time.time + WaitFireTimeoutSec;
+                        while (!gunSys.IsPendingReload() && !task.Canceled && Time.time < fireDeadline)
+                            yield return null;
+                        if (task.Canceled) { outcome.TerminalProgress = Progress.Canceled; yield break; }
+                        if (!gunSys.IsPendingReload())
+                        {
+                            MelonLogger.Error($"[FCS] {leftRight} 击发后 {WaitFireTimeoutSec}s 未进入退膛(游戏拒发?), 放弃。膛内: 弹={gunSys.BulletInChamber() ?? "null"} 装药={gunSys.ChamberCharges()} CanFire={gunSys.CanFire()}");
+                            outcome.TerminalProgress = Progress.Failed;
+                            yield break;
+                        }
+                    } else if (!gunSys.IsPendingReload()) {
+                        MelonLogger.Error($"[FCS] {leftRight} 等持锁者击发超时 {PartnerWaitTimeoutSec}s, 放弃(持锁者停滞?)");
+                        outcome.TerminalProgress = Progress.Failed;
+                        yield break;
+                    }
+                }
+            } else {
+                // AutoFire 关: 持续跟踪 aim(t) 直到玩家扳机——否则炮管停在旧点, 移动目标必偏。
+                // 静态任务此循环目标值恒定, 退化为无操作等待。
+                // 2026-08-16: 增加 Canceled 检查点——此前看门狗取消后协程仍每帧驱动方位/占用资源。
+                MelonLogger.Warning($"[FCS] {leftRight} AutoFire 关: 已武装, 等玩家手动扳机(期间炮塔锁不归还)");
+                while (!gunSys.IsPendingReload() && !task.Canceled) {
+                    TryComputeAimTargets(task, out var b, out var e);
+                    Turret.SetDesiredRotation(b);
+                    gunSys.SetElevationTarget(e);
+                    yield return null;
+                }
+                if (task.Canceled) { outcome.TerminalProgress = Progress.Canceled; yield break; }
+            }
+            outcome.Fired = true;
+        }
+        finally {
+            ReleaseTurretOnce(turret);
         }
     }
 

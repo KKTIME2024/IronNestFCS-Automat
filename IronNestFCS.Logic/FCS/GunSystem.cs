@@ -92,6 +92,27 @@ public class GunSystem {
         reloadController = gunController?.artilleryReloadController;
         elevationLever = GameObject.Find(".Elevation Lever Baseplate")?.transform.FindChild(".Elevation Lever " + surfix)
             .GetComponent<LinearSliderInteractable>();
+        // 一次性诊断探针(定位膛内装药读取恒 -1 后删除): 枚举 PowderChargeController 对象上的组件与字段
+        try {
+            var pc = reloadingConsole.Find("PowderChargeController");
+            if (pc == null) {
+                MelonLogger.Error($"[FCS][探针] GunSystem {surfix}: PowderChargeController 对象不存在");
+            }
+            else {
+                foreach (var comp in pc.GetComponents<Component>()) {
+                    MelonLogger.Msg($"[FCS][探针] PowderChargeController 组件: {comp.GetType().FullName}");
+                    foreach (var f in comp.GetType().GetFields(
+                                 System.Reflection.BindingFlags.Instance
+                                 | System.Reflection.BindingFlags.Public
+                                 | System.Reflection.BindingFlags.NonPublic)) {
+                        MelonLogger.Msg($"[FCS][探针]   字段 {f.FieldType.Name} {f.Name}");
+                    }
+                }
+            }
+        }
+        catch (System.Exception ex) {
+            MelonLogger.Error($"[FCS][探针] GunSystem {surfix} 探查失败: {ex.Message}");
+        }
         return true;
     }
     
@@ -153,21 +174,39 @@ public class GunSystem {
     /// PowderChargeController 引用缓存(热重载后失效重找), 避免每次 GameObject.Find 全场景搜索。
     /// </summary>
     private PowderChargeController? _cachedPowderCtrl;
+    private bool _chargeProbeLogged;   // 装药读取失败原因只打一次(每次热重载一次), 防刷屏
 
     public int ChamberCharges() {
         try {
             if (_cachedPowderCtrl == null)
             {
                 var reloadingConsole = GameObject.Find("Gun System " + _surfix)?.transform.Find("--Reloading Console");
-                if (reloadingConsole == null) return -1;
+                if (reloadingConsole == null) { LogChargeProbe("--Reloading Console 对象不存在"); return -1; }
                 _cachedPowderCtrl = reloadingConsole.GetComponentInChildren<PowderChargeController>();
+                if (_cachedPowderCtrl == null) { LogChargeProbe("PowderChargeController 组件不存在(路径存在)"); return -1; }
             }
             if (_cachedPowderCtrl == null) return -1;
             var f = _cachedPowderCtrl.GetType().GetField("currentSelectedCharges",
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-            return f?.GetValue(_cachedPowderCtrl) is int n ? n : -1;
+            if (f == null) {
+                LogChargeProbe($"字段 currentSelectedCharges 不存在, 实际字段: " +
+                    string.Join(", ", System.Array.ConvertAll(
+                        _cachedPowderCtrl.GetType().GetFields(
+                            System.Reflection.BindingFlags.Instance
+                            | System.Reflection.BindingFlags.Public
+                            | System.Reflection.BindingFlags.NonPublic),
+                        x => x.Name)));
+                return -1;
+            }
+            return f.GetValue(_cachedPowderCtrl) is int n ? n : -1;
         }
-        catch { return -1; }
+        catch (System.Exception ex) { LogChargeProbe("异常: " + ex.Message); return -1; }
+    }
+
+    private void LogChargeProbe(string reason) {
+        if (_chargeProbeLogged) return;
+        _chargeProbeLogged = true;
+        MelonLogger.Warning($"[FCS][探针] {_surfix} 膛内装药读取失败: {reason}");
     }
 
     /// <summary>炮管是否为"脏状态"(残留弹)。注意: 只用可靠信号判定——
