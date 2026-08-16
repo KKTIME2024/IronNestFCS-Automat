@@ -763,6 +763,14 @@ public class FSC
         _runningCoroutines.Add(MelonCoroutines.Start(EmergencyMoveRoutine(onDone)));
     }
 
+    /// <summary>紧急移动后暂停窗口内延迟击发(2026-08-16 用户: "自己紧急移动中开炮" 是 bug)。
+    /// 装填/瞄准照常, 只推迟武装击发; 暂停解除即恢复, 上限 30s 防暂停永久不解除时死等。</summary>
+    public void HoldFireAfterMove()
+    {
+        _holdFireUntil = Time.time + 30f;
+        MelonLogger.Msg("[FCS] 紧急移动后延迟击发: 暂停窗口内不开炮(暂停解除即恢复, 上限 30s)");
+    }
+
     private IEnumerator EmergencyMoveRoutine(Action? onDone)
     {
         if (!_purchaseDeck.HasEmergencyMoveCard)
@@ -794,6 +802,9 @@ public class FSC
         // 地图面仍在移动, 此刻派发的任务会把瞄准基准冻结在移动中的位置 → 转移后打空。
         // 等到基准连续两次采样(1s 间隔)一致(上限 10s)才放行; 引用不可用时无法判定直接放行。
         yield return WaitForMoveSettle(10f);
+        // F1(2026-08-16 正确形式): 自己移动造成的基准突变复位手动转移检测基线——
+        // 否则紧随其后的 5s 检测把自身误判为"玩家手动转移" → 双重清理。
+        _lastTurretLocal = null;
         // 清洗双管炮管脏状态(残留弹/装药/状态机停在中间)——直接装填会卡 WaitLoading。
         // 注意: 用户手动装的弹(Origin=Manual)不退壳——转移阵地后游戏自己会重置炮管,
         // 但手动弹是用户资产, 保留(若游戏重置了也拦不住, 至少我们不主动退)。
@@ -823,12 +834,15 @@ public class FSC
     /// <summary>真实炮塔在地图面下的局部坐标(瞄准基准)。引用缺失返回 null。</summary>
     private Vector3? TurretLocalOnSurface()
     {
-        if (_mapSurface == null || _turretXf == null) return null;
-        return _mapSurface.InverseTransformPoint(_turretXf.position);
+        var surface = AimSurface;
+        var turretXf = AimTurretBase;
+        if (surface == null || turretXf == null) return null;
+        return surface.InverseTransformPoint(turretXf.position);
     }
 
     private Vector3? _lastTurretLocal;         // 手动转移检测: 上次采样基准
     private float _lastTransferCheckTime;
+    private float _holdFireUntil;              // 紧急移动暂停窗口内延迟击发(用户: 自己移动中不开炮)
 
     /// <summary>玩家手动紧急移动检测(2026-08-16 用户): 玩家手动买 MoveZone 卡/转移阵地 →
     /// 游戏移动 TurretLocation → 基准位置突变 → 返回 true(调用方执行转移后清理, 防任务卡死——
@@ -861,6 +875,7 @@ public class FSC
         yield return new WaitForSeconds(5f);   // 转移动画稳定
         RefreshAimGeometry();
         yield return WaitForMoveSettle(10f);
+        _lastTurretLocal = null;   // 转移后重置手动转移检测基线
         if (LeftGun.Origin != GunSystem.ChamberOrigin.Manual) yield return LeftGun.CleanState();
         if (RightGun.Origin != GunSystem.ChamberOrigin.Manual) yield return RightGun.CleanState();
         MelonLogger.Msg("[FCS] 手动转移清理完成, 炮管已清洗");
@@ -1244,6 +1259,7 @@ public class FSC
             }
             turret.Aiming = true;   // 主流程接管方位(后台停止驱动)
             MelonLogger.Msg($"[FCS] {leftRight} 炮塔锁已持有, 进入瞄准/击发段");
+            RecheckStaticBearing(task, leftRight);   // 基准复核(2026-08-16): 阵地基准漂移时纠正定格方位
 
             // 另一管当前目标方位与本管差 ≤ 容差 → 可齐射放行。移动目标只放行同实体:
             // 不同移动目标同方位会随时间发散 → 两管收敛循环抢舵(锁门原本防的正是抢舵)。
@@ -1474,6 +1490,23 @@ public class FSC
         TurretReservation turret, GunSystem gunSys, FirePhaseOutcome outcome)
     {
         try {
+            // 击发前基准复核(2026-08-16 打错方向修复): 静态任务沿用采纳时定格角, 阵地基准漂移
+            // (紧急移动/地图面重建)后连续打空——用当前几何对实体最新位置重算, 偏差>1° 更新重瞄。
+            RecheckStaticBearing(task, leftRight);
+            // 紧急移动暂停窗口: 延迟击发(2026-08-16 用户: 自己移动中不开炮)。装填/瞄准照常,
+            // 只推迟武装击发; 暂停解除即恢复, 上限 30s。
+            if (Time.time < _holdFireUntil && Cbt.IsPausedWindow && !task.forceFire)
+            {
+                MelonLogger.Warning($"[FCS] {leftRight} 紧急移动暂停窗口内, 延迟击发(等暂停解除, 上限 {_holdFireUntil - Time.time:F0}s)");
+                while (Time.time < _holdFireUntil && Cbt.IsPausedWindow && !task.Canceled)
+                {
+                    TryComputeAimTargets(task, out var hb, out var he);
+                    Turret.SetDesiredRotation(hb);
+                    gunSys.SetElevationTarget(he);
+                    yield return null;
+                }
+                if (task.Canceled) { outcome.TerminalProgress = Progress.Canceled; yield break; }
+            }
             // 臂杆按下与 5 个确认并行(开关是纯 0/1 flag, 一口气点完, 在臂杆保持期内完成)。
             // 臂杆自动拉下 = 该炮管就绪(此刻方位/仰角已收敛, 不会在错误方向角臂下)
             outcome.Armed = true;
@@ -1609,21 +1642,44 @@ public class FSC
         _turretXf = MapTable.TurretLocation ?? MapTable.Turret;
     }
 
+    /// <summary>瞄准用地图面(懒自愈, 2026-08-16 打错方向修复): fake-null 时按需重找。</summary>
+    private Transform? AimSurface {
+        get {
+            if (_mapSurface == null)
+                _mapSurface = GameObject.Find("Draggable Surface")?.transform;
+            return _mapSurface;
+        }
+    }
+
+    /// <summary>瞄准用炮塔基准(懒自愈): fake-null 时重找——MapTable.TurretLocation 自身也是懒刷新,
+    /// 转移重建后自动取新对象, 不再静默回退到过期的 Player Turret Piece。</summary>
+    private Transform? AimTurretBase {
+        get {
+            if (_turretXf == null)
+                _turretXf = MapTable.TurretLocation ?? MapTable.Turret;
+            return _turretXf;
+        }
+    }
+
     /// <summary>世界坐标 → 距离 km（与 TacticalRadar.CalcDistance 同换算）</summary>
     private float DistKm(Vector3 worldPos) {
-        if (_mapSurface == null || _turretXf == null) return 0f;
+        var surface = AimSurface;
+        var turretXf = AimTurretBase;
+        if (surface == null || turretXf == null) return 0f;
         // 统一转地图面局部坐标: Piece 父=地图面(localPosition 即局部), TurretLocation 父=MapRoot
         // (须 InverseTransformPoint 世界坐标)。用世界坐标转换对两者都正确(2026-08-15)。
-        var turretLocal = _mapSurface.InverseTransformPoint(_turretXf.position);
-        var target = _mapSurface.InverseTransformPoint(worldPos) - turretLocal;
+        var turretLocal = surface.InverseTransformPoint(turretXf.position);
+        var target = surface.InverseTransformPoint(worldPos) - turretLocal;
         return target.magnitude * 3.8164f;
     }
 
     /// <summary>世界坐标 → 方位角（与 TacticalRadar.CalcAngle 同逻辑）</summary>
     private float Bearing(Vector3 worldPos) {
-        if (_mapSurface == null || _turretXf == null) return 0f;
-        var turretLocal = _mapSurface.InverseTransformPoint(_turretXf.position);
-        var target = _mapSurface.InverseTransformPoint(worldPos) - turretLocal;
+        var surface = AimSurface;
+        var turretXf = AimTurretBase;
+        if (surface == null || turretXf == null) return 0f;
+        var turretLocal = surface.InverseTransformPoint(turretXf.position);
+        var target = surface.InverseTransformPoint(worldPos) - turretLocal;
         var angle = Vector3.SignedAngle(target, Vector3.up, Vector3.forward);
         return angle < 0 ? angle + 360f : angle;
     }
@@ -1691,6 +1747,30 @@ public class FSC
     private bool AlignOk(ArtilleryTask task, GunSystem gunSys, float tol) {
         TryComputeAimTargets(task, out var bearing, out var elev);
         return gunSys.ElevationError(elev) < tol && Turret.AngleError(bearing) < tol;
+    }
+
+    /// <summary>
+    /// 静态任务基准复核(2026-08-16 打错方向修复): 任务方位在派发时按雷达基准定格, 紧急移动/
+    /// 地图面重建后基准漂移 → 连续朝错误方位开炮。击发段入口用当前几何对实体最新位置重算,
+    /// 偏差 > 1° 更新任务方位/距离并重瞄(集群任务用领队位置+集群偏移)。
+    /// </summary>
+    private void RecheckStaticBearing(ArtilleryTask task, LeftRight leftRight)
+    {
+        if (task.IsMoving || EntityLocator == null) return;
+        var trackId = task.TrackEntityId is { Length: > 0 } ? task.TrackEntityId : task.entityId;
+        if (string.IsNullOrEmpty(trackId)) return;
+        if (!EntityLocator.TryGetMotion(trackId, out var livePos, out _)) return;
+        var aimPos = task.ClusterOffset.sqrMagnitude > 0f ? livePos + task.ClusterOffset : livePos;
+        var freshBearing = Bearing(aimPos);
+        var drift = Mathf.Abs(Mathf.DeltaAngle(task.angel, freshBearing));
+        if (drift > 1f)
+        {
+            var freshDist = DistKm(aimPos);
+            MelonLogger.Warning($"[FCS] {leftRight} 基准复核: 方位漂移 {task.angel:F1}°→{freshBearing:F1}° " +
+                                $"dist {task.distance:F2}→{freshDist:F2}km, 更新重瞄(防打错方向)");
+            task.angel = freshBearing;
+            task.distance = freshDist;
+        }
     }
 
     /// <summary>装填期炮塔方位(后台预约协程用): 静态=任务方位; 移动=提前点方位(冻结快照外推)。

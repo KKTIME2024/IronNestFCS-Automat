@@ -62,6 +62,7 @@ public class FcsModule : IFcsModule
     {
         _emergencyMoveInProgress = false;
         _lastEmergencyMoveTime = Time.time;
+        fcs.HoldFireAfterMove();   // 自己移动后暂停窗口内不开炮(2026-08-16 用户反馈)
         nextSweepTime = 0;   // 立即补派一轮
         OnGunIdle();
     }

@@ -13,13 +13,38 @@ public class MapTable {
     /// <summary>真实炮塔: MapRoot 下的固定子物体, 玩家拖动不移动它</summary>
     private Transform? turretLocation;
 
-    /// <summary>炮塔 Transform 只读访问(供 TacticalRadar 等使用)</summary>
-    public Transform? Turret => turret;
+    /// <summary>炮塔 Transform 只读访问(供 TacticalRadar 等使用)。
+    /// 懒刷新(2026-08-16): 紧急移动可能销毁重建 Piece, 缓存 fake-null 后按需重找。</summary>
+    public Transform? Turret {
+        get {
+            if (turret == null) {
+                var obj = GameObject.Find("Player Turret Piece");
+                if (obj != null) turret = obj.transform;
+            }
+            return turret;
+        }
+    }
 
     /// <summary>真实炮塔 Transform(TurretLocation, MapRoot 固定子物体)。
     /// 玩家拖动不移动它, 紧急移动转移阵地时游戏移动它——瞄准基准应用它而非可拖动的
-    /// Player Turret Piece(2026-08-15: Piece 是标记, 转移后 5s 内可能未归位, 用它瞄准会偏)。</summary>
-    public Transform? TurretLocation => turretLocation;
+    /// Player Turret Piece(2026-08-15: Piece 是标记, 转移后 5s 内可能未归位, 用它瞄准会偏)。
+    /// 懒刷新(2026-08-16 打错方向修复): 转移可能销毁重建该对象, 缓存 fake-null 后按需重找;
+    /// 找不到才回退 Piece——不再永久卡在旧引用上。</summary>
+    public Transform? TurretLocation {
+        get {
+            if (turretLocation == null) {
+                var obj = GameObject.Find("TurretLocation");
+                if (obj != null) turretLocation = obj.transform;
+            }
+            return turretLocation;
+        }
+    }
+
+    /// <summary>地图面(懒刷新, 2026-08-16): 转移阵地可能销毁重建地图面, 缓存 fake-null 后按需重找。
+    /// Bearing/DistKm/overlay 的坐标基准, 引用失效时打出的方位全错。</summary>
+    private Transform? MapSurface => mapSurface == null
+        ? (mapSurface = GameObject.Find("Draggable Surface")?.transform)
+        : mapSurface;
 
     public bool TryBind() {
         artilleries = new Dictionary<int, Transform>();
@@ -68,15 +93,18 @@ public class MapTable {
     /// TurretLocation 是 MapRoot 下的固定子物体（玩家拖动不移动），
     /// Player Turret Piece 是可拖动标记，仅作回退。</summary>
     public Vector3 GetTurretLocal() {
-        if (turretLocation != null && mapSurface != null)
-            return mapSurface.InverseTransformPoint(turretLocation.position);
-        return turret != null ? turret.localPosition : Vector3.zero;
+        var loc = TurretLocation;
+        var surface = MapSurface;
+        if (loc != null && surface != null)
+            return surface.InverseTransformPoint(loc.position);
+        return Turret != null ? Turret.localPosition : Vector3.zero;
     }
 
     /// <summary>世界坐标 → 地图局部坐标(overlay 渲染用)。地图静态, 直接 InverseTransformPoint。</summary>
     public Vector3 WorldToMapLocal(Vector3 worldPos) {
-        if (mapSurface == null) return worldPos;
-        return mapSurface.InverseTransformPoint(worldPos);
+        var s = MapSurface;
+        if (s == null) return worldPos;
+        return s.InverseTransformPoint(worldPos);
     }
 
     public ArtilleryTask? GetMarkTarget(int index) {
@@ -105,8 +133,9 @@ public class MapTable {
     public void SetMarkerWorldPos(int index, Vector3 worldPos)
     {
         if (!artilleries.TryGetValue(index, out var marker)) return;
-        if (mapSurface == null) return;
-        var local = mapSurface.InverseTransformPoint(worldPos);
+        var surface = MapSurface;
+        if (surface == null) return;
+        var local = surface.InverseTransformPoint(worldPos);
         local.z = marker.localPosition.z;
         marker.localPosition = local;
     }

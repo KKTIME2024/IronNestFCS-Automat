@@ -43,44 +43,7 @@ public class TriggerConsole {
         _armRight = GameObject.Find(".ArmingLeverParent Right").GetComponentInChildren<LookAtTarget>();
         _fire = GameObject.Find(".Trigger Core").transform.FindChild(".Generator Spinner")
             .GetComponentInChildren<SliderEnergyMomentumSpinner>();
-        ProbeConsoleState(buttons);
         return true;
-    }
-
-    /// <summary>
-    /// 一次性诊断探针(定位拒发后删除): 确认开关/臂杆/击发旋钮是翻转式(点击=翻转), 无状态可读 →
-    /// 中止残留"已武装"会使下次武装翻回"未武装" → 游戏拒发。枚举组件与字段, 找可读的开关状态。
-    /// </summary>
-    private static void ProbeConsoleState(List<LookAtTarget> buttons) {
-        try {
-            for (var i = 0; i < buttons.Count; i++) {
-                var go = buttons[i] == null ? null : buttons[i].gameObject;
-                MelonLogger.Msg($"[FCS][探针] 确认开关 {i} ({go?.name ?? "null"}):");
-                DumpComponents(go);
-            }
-            var armLeft = GameObject.Find(".ArmingLeverParent Left")?.GetComponentInChildren<LookAtTarget>();
-            MelonLogger.Msg($"[FCS][探针] 左臂杆 ({armLeft?.name ?? "null"}):");
-            DumpComponents(armLeft?.gameObject);
-            var spin = GameObject.Find(".Trigger Core")?.transform.FindChild(".Generator Spinner");
-            MelonLogger.Msg($"[FCS][探针] 击发旋钮 ({spin?.name ?? "null"}):");
-            DumpComponents(spin?.gameObject);
-        }
-        catch (Exception ex) {
-            MelonLogger.Error($"[FCS][探针] 失败: {ex.Message}");
-        }
-    }
-
-    private static void DumpComponents(GameObject? go) {
-        if (go == null) return;
-        foreach (var comp in go.GetComponents<Component>()) {
-            MelonLogger.Msg($"[FCS][探针]   组件 {comp.GetType().FullName}");
-            foreach (var f in comp.GetType().GetFields(
-                         System.Reflection.BindingFlags.Instance
-                         | System.Reflection.BindingFlags.Public
-                         | System.Reflection.BindingFlags.NonPublic)) {
-                MelonLogger.Msg($"[FCS][探针]     字段 {f.FieldType.Name} {f.Name}");
-            }
-        }
     }
 
     public void Fire() {
