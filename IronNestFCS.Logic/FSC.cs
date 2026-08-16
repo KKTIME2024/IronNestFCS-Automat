@@ -1488,7 +1488,7 @@ public class FSC
         }
         while (!res.Released) {
             // 主流程未接管前持续追方位(装填期+等锁期); 拿到锁接管后(Aiming)停止。
-            if (!res.Aiming && TryGetTaskBearing(task, out var bearing))
+            if (!res.Aiming && TryGetMovingBearing(task, out var bearing))
                 Turret.SetDesiredRotation(bearing);
             yield return null;
         }
@@ -1604,17 +1604,14 @@ public class FSC
         return gunSys.ElevationError(elev) < tol && Turret.AngleError(bearing) < tol;
     }
 
-    /// <summary>装填期炮塔方位(后台预约协程用): 静态=任务方位; 移动=提前点方位(冻结快照外推)。
-    /// 2026-08-16 修: 原实现静态目标返回 false → 装填期不转方位, 装填完才大角度追; 现在一律尽早转。</summary>
-    private bool TryGetTaskBearing(ArtilleryTask task, out float bearing) {
+    /// <summary>移动目标当前方位（提前点方向, 冻结快照外推）。非移动返回 false。</summary>
+    private bool TryGetMovingBearing(ArtilleryTask task, out float bearing) {
         AdoptVelocityIfNeeded(task);   // 装填期采纳: 炮塔尽早转向提前方位, 避免装填完再大角度追
         bearing = task.angel;
-        if (task.IsMoving && TargetLeadSolver.IsMoving(task.AimVel))
-        {
-            var tof = ToFTable.FlightTime(task.distance, task.LoadedCharge);
-            bearing = Bearing(TargetLeadSolver.LeadPoint(task.AimP0, task.AimVel,
-                Time.time - task.AimStartTime, tof));
-        }
+        if (!task.IsMoving || !TargetLeadSolver.IsMoving(task.AimVel)) return false;
+        var tof = ToFTable.FlightTime(task.distance, task.LoadedCharge);
+        bearing = Bearing(TargetLeadSolver.LeadPoint(task.AimP0, task.AimVel,
+            Time.time - task.AimStartTime, tof));
         return true;
     }
 
