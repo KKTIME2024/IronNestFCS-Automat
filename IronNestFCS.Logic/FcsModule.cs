@@ -62,6 +62,10 @@ public class FcsModule : IFcsModule
     {
         _emergencyMoveInProgress = false;
         _lastEmergencyMoveTime = Time.time;
+        // F1(2026-08-16 用户日志): 紧急移动期间检测器被守卫跳过, 基线停在移动前位置 →
+        // 标志清除后 40ms 内第一次检测把 mod 自己的转移误判成玩家手动(双清理 → 右炮装填卡死)。
+        // 先重置基线到当前位置再恢复派发, 检测器下次采样从新位置起算。
+        fcs.ResetManualTransferBaseline();
         nextSweepTime = 0;   // 立即补派一轮
         OnGunIdle();
     }
