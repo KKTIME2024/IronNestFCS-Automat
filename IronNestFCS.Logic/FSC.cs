@@ -118,7 +118,7 @@ public class FSC
     /// （此时炮塔已由后台预约持有，再去抢 desk），解算/确认弹只单独用 desk，故无环、不死锁。
     /// </summary>
     private readonly CoroutineLock _turretLock = new();
-    private float _lastPieceSyncTime;   // Piece 自动归位节流
+    private float _lastPieceSyncTime = -4f;   // 5s 周期错峰: 相位 1s 触发(与扫荡 5s/CBT 4s/膛内 3s/看门狗 2s 不同帧)
 
     // ===== 任务看门狗 =====
     // 协程死亡(异常/被 Stop/子协程 yield 卡死)后, 槽位 LeftTask/RightTask 可能残留非 null,
@@ -128,7 +128,7 @@ public class FSC
     private float _watchdogSinceLeft;
     private Progress _watchdogProgressRight = Progress.Pending;
     private float _watchdogSinceRight;
-    private float _lastWatchdogTime;   // 看门狗 5s 节流(低频兜底, 阈值都是 90s+)
+    private float _lastWatchdogTime = -3f;   // 看门狗 5s 节流(低频兜底, 阈值都是 90s+; 相位 2s 触发错峰)
     // 任务→炮塔预约映射(看门狗强制释放用): 任务协程创建预约时登记, 结束后移除。
     private readonly Dictionary<ArtilleryTask, TurretReservation> _taskTurretRes = new();
     private readonly Dictionary<Progress, float> _watchdogLimit = new()
@@ -536,7 +536,7 @@ public class FSC
         }
     }
 
-    private float _lastOriginCheckTime;
+    private float _lastOriginCheckTime = -2f;   // 膛内弹来源检测 5s 节流(相位 3s 触发错峰)
     private float _lastFdcWaitLog;   // FDC 等旧弹落地诊断日志节流(2026-08-16)
 
     /// <summary>膛内弹来源检测: 膛空 → 复位 Unknown; 膛内有弹且 Unknown → 用户手动装的(标 Manual)。

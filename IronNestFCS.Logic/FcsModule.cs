@@ -18,7 +18,7 @@ public class FcsModule : IFcsModule
 
     private float lastScanTime;
     private float nextSweepTime;
-    private float lastCbtPollTime;
+    private float lastCbtPollTime = -1f;   // 5s 周期错峰: 与扫荡(lastScanTime)不同帧触发, 防同帧峰值叠加
     private float _lastMoveBlockLog;    // 紧急移动延迟日志节流
     private bool _lastFocused = true;   // 失焦/恢复诊断(2026-08-16 用户: Alt+Tab 后游戏未响应)
     private float _lastTimeScaleWarn;   // 聚焦但 timeScale=0 警告节流
@@ -372,24 +372,43 @@ public class FcsModule : IFcsModule
         overlay = null;
     }
 
-    /// <summary>找到所有蒸汽泄漏点，收紧最近阀门到指定值（0=拧紧, 999=全开）</summary>
-    private static void AdjustAllValves(float value)
+    /// <summary>找到所有蒸汽泄漏点，收紧最近阀门到指定值（0=拧紧, 999=全开）。
+    /// 性能(2026-08-16): 绑定缓存 30s 刷新——原实现每次调用 2 次 FindObjectsOfType 全场景枚举,
+    /// 5s 扫荡 + 退膛事件高频触发造成周期性帧峰值。阀门/泄漏点是场景静态物件, 30s 缓存 + null 失效检查足够。</summary>
+    private const float ValveRefreshInterval = 30f;
+    private List<(DialInteractable di, Vector3 pos)>? valveDials;
+    private List<GameObject>? steamLeaks;
+    private float lastValveRefresh;
+
+    private void AdjustAllValves(float value)
     {
-        var dials = new List<(DialInteractable di, Vector3 pos)>();
-        foreach (var go in Object.FindObjectsOfType<GameObject>(true))
+        bool stale = Time.time - lastValveRefresh > ValveRefreshInterval
+            || valveDials == null || steamLeaks == null
+            || valveDials.Any(d => d.di == null) || steamLeaks.Any(l => l == null);
+        if (stale)
         {
-            var di = go.GetComponent<DialInteractable>();
-            if (di != null) dials.Add((di, go.transform.position));
+            valveDials = new List<(DialInteractable di, Vector3 pos)>();
+            foreach (var go in Object.FindObjectsOfType<GameObject>(true))
+            {
+                var di = go.GetComponent<DialInteractable>();
+                if (di != null) valveDials.Add((di, go.transform.position));
+            }
+            steamLeaks = new List<GameObject>();
+            foreach (var go in Object.FindObjectsOfType<GameObject>(true))
+            {
+                if (go != null && go.name.ToLower().Contains("steam leak")) steamLeaks.Add(go);
+            }
+            lastValveRefresh = Time.time;
         }
         int done = 0;
-        foreach (var go in Object.FindObjectsOfType<GameObject>(true))
+        foreach (var leak in steamLeaks)
         {
-            if (go == null || !go.name.ToLower().Contains("steam leak")) continue;
+            if (leak == null) continue;
             DialInteractable? nearest = null;
             float minDist = float.MaxValue;
-            foreach (var (di, pos) in dials)
+            foreach (var (di, pos) in valveDials)
             {
-                var d = (pos - go.transform.position).magnitude;
+                var d = (pos - leak.transform.position).magnitude;
                 if (d < minDist) { minDist = d; nearest = di; }
             }
             if (nearest == null) continue;
