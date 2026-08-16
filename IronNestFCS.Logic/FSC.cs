@@ -841,16 +841,6 @@ public class FSC
         return dist > 0.3f;
     }
 
-    /// <summary>重置手动转移检测基线(自动紧急移动完成时调用, F1):
-    /// 紧急移动期间检测器被 _emergencyMoveInProgress 守卫跳过 → 基线停在移动前,
-    /// 完成后首次检测会把 mod 自己的转移误判为玩家手动(→ 双清理 → 装填状态机卡死)。
-    /// 置 null 让下次采样重建基线(当前位置), 同时重开 5s 节流窗口。</summary>
-    public void ResetManualTransferBaseline()
-    {
-        _lastTurretLocal = null;
-        _lastTransferCheckTime = Time.time;
-    }
-
     /// <summary>手动转移后的清理(2026-08-16 用户): 玩家已手动买 MoveZone 卡, 跳过采购——
     /// 等转移动画稳定 → 刷新几何引用 → 等基准静止 → 清洗双管(手动弹不退壳) → 回调恢复派发。
     /// 与自动紧急移动的转移后段一致, 防炮管状态被重置后任务卡死。</summary>
@@ -864,11 +854,8 @@ public class FSC
         yield return new WaitForSeconds(5f);   // 转移动画稳定
         RefreshAimGeometry();
         yield return WaitForMoveSettle(10f);
-        // F2(2026-08-16 用户日志): 膛空时跳过退壳——双清理(紧急移动+误判手动)在空膛上再退壳,
-        // 与刚补派任务的推弹并发打架 → 装填状态机卡死在推弹窗口前(Load shell Rammer 20s 不激活)。
-        // 膛空=没东西可退, 直接跳过; 保留 Manual 来源保护(玩家手动装的弹不退壳)。
-        if (LeftGun.Origin != GunSystem.ChamberOrigin.Manual && !LeftGun.IsChamberEmpty()) yield return LeftGun.CleanState();
-        if (RightGun.Origin != GunSystem.ChamberOrigin.Manual && !RightGun.IsChamberEmpty()) yield return RightGun.CleanState();
+        if (LeftGun.Origin != GunSystem.ChamberOrigin.Manual) yield return LeftGun.CleanState();
+        if (RightGun.Origin != GunSystem.ChamberOrigin.Manual) yield return RightGun.CleanState();
         MelonLogger.Msg("[FCS] 手动转移清理完成, 炮管已清洗");
         onDone?.Invoke();
     }
