@@ -379,11 +379,17 @@ public class GunSystem {
         {
             var canLoad = reloadController.GetType().GetMethod("CanLoadBullet",
                 System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+            bool ok = false;
             for (var tryStep = 0; tryStep < 3; tryStep++)
             {
-                var ok = false;
                 try { ok = canLoad != null && (bool)canLoad.Invoke(reloadController, null)!; } catch { }
                 if (ok) break;
+                // 诊断(2026-08-18 事故: 紧急移动后 Left 炮管状态机卡死, 推弹杆永不激活):
+                // 记下游戏侧状态机停在哪个状态, 下次卡壳直接定位是移动重置残留还是退壳中断。
+                var state = CurrentReloadState;
+                MelonLogger.Error($"[FCS] GunSystem {_surfix}: CanLoadBullet=false (第{tryStep + 1}轮) " +
+                                  $"state={state} working={reloadController.working} " +
+                                  $"breechLock={gunController != null && gunController.ExternalReloadLoweringLocked}");
                 if (tryStep > 0)
                 {
                     InvokeReflected(reloadController.GetType(), reloadController, "RegressState");
@@ -398,8 +404,63 @@ public class GunSystem {
                 }
                 if (ok) break;
             }
+            if (!ok)
+            {
+                // 快速失败(2026-08-18): 按钮确定不会激活, 不再进 WaitAndClick 白等 20s——
+                // 让上层 BulletInChamber 校验尽快判 Failed 释放槽位重新派发。
+                MelonLogger.Error($"[FCS] GunSystem {_surfix}: 推弹杆无法激活(3轮回退失败, state={CurrentReloadState}), 放弃推弹快速失败");
+                yield break;
+            }
         }
         yield return FcsSceneInteractor.WaitAndClick(loadBulletButton!);
+    }
+
+    /// <summary>读装填状态机当前状态名(诊断用); 读取失败返回 "?"。</summary>
+    public string CurrentReloadState
+    {
+        get
+        {
+            try
+            {
+                var s = reloadController?.CurrentState;
+                return s != null ? (s.stateKey ?? s.displayName ?? "?") : "null";
+            }
+            catch { return "?"; }
+        }
+    }
+
+    /// <summary>装填机构是否完全空闲(无working/仰角未动/炮闩未锁)。</summary>
+    public bool ReloadIdle()
+    {
+        if (gunController == null) return false;
+        if (reloadController != null && reloadController.working) return false;
+        if (gunController.elevationChangeVelocity != 0) return false;
+        return !gunController.ExternalReloadLoweringLocked;
+    }
+
+    /// <summary>炮管是否"可接下一任务"(机构空闲 且 [膛内有弹 或 可装填])。
+    /// 与 IsLoadReady 的区别: 膛内已有整发(装填完毕)也算就绪——RunTaskRoutine 的膛内状态
+    /// 评估会按弹种复用或退壳重装, 不需要先清洗。</summary>
+    public bool IsTaskReady()
+    {
+        if (!ReloadIdle()) return false;
+        if (!IsChamberEmpty()) return true;
+        return IsLoadReady();
+    }
+
+    /// <summary>炮管是否处于"立刻可装填"就绪态(机构空闲 + 游戏 CanLoadBullet)。紧急移动后派发门用。</summary>
+    public bool IsLoadReady()
+    {
+        if (gunController == null || reloadController == null) return false;
+        if (reloadController.working || gunController.elevationChangeVelocity != 0) return false;
+        if (gunController.ExternalReloadLoweringLocked) return false;
+        try
+        {
+            var m = reloadController.GetType().GetMethod("CanLoadBullet",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+            return m != null && (bool)m.Invoke(reloadController, null)!;
+        }
+        catch { return false; }
     }
 
     private IEnumerator SelectPowder(int count) {
@@ -443,9 +504,14 @@ public class GunSystem {
     }
 
     public IEnumerator WaitFire() {
-        while (gunController != null && !gunController.pendingReload) {
+        // 超时兜底(2026-08-18): 空炮/状态粘连时 pendingReload 可能永不置位 →
+        // 无超时死等会把任务卡死在看门狗上限; 30s 强制放行, 由下一任务膛内评估兜底。
+        var deadline = Time.realtimeSinceStartup + 30f;
+        while (gunController != null && !gunController.pendingReload && Time.realtimeSinceStartup < deadline) {
             yield return new WaitForSeconds(0.1f);
         }
+        if (!gunController.pendingReload && Time.realtimeSinceStartup >= deadline)
+            MelonLogger.Error($"[FCS] GunSystem {_surfix}: WaitFire 30s 超时, pendingReload 未置位(状态粘连?), 继续");
     }
 
     /// <summary>非阻塞: 设仰角杆目标值, 不等待。连续跟踪每帧调用。</summary>

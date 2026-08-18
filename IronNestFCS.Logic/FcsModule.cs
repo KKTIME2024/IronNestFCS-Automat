@@ -15,6 +15,7 @@ public class FcsModule : IFcsModule
     private FcsWindow? window;
     private TacticalRadar? radar;
     private MapOverlay? overlay;
+    private CbtProbe? probe;            // CBT 规则判据探针(纯观察者, [PROBE] 日志)
 
     private float lastScanTime;
     private float nextSweepTime;
@@ -30,10 +31,10 @@ public class FcsModule : IFcsModule
     private const float EmergencyMoveCooldown = 45f;  // 紧急移动冷却(秒): 防 FDC 暂停误触发连买
 
     /// <summary>
-    /// 紧急移动: 采购 MoveZone 卡(65 点, 暂停倒计时到下一发落地 + 转移阵地)。
-    /// 转移期间暂停自动派发(阵地移动会重置炮管状态, 弹被卸下 → 新任务瞄准段卡死);
-    /// 正在执行的任务置 Canceled(瞄准/装填循环新增检查点, 干净退出释放锁/槽位);
-    /// 等倒计时暂停生效(IsRunning=false)后复位, 并触发补派。
+    /// 紧急移动: 采购 MoveZone 卡(65 点, 暂停倒计时 + 转移阵地)。
+    /// 转移期间暂停自动派发; 正在执行的任务置 Canceled(干净退出释放锁/槽位)。
+    /// 2026-08-18 实测: 游戏转移阵地**不退膛内弹**——移后保留装填完毕的整发(任务直接复用击发),
+    /// 只清洗中间态炮管(Baseline 档禁用本功能)。
     /// </summary>
     private void StartEmergencyMove()
     {
@@ -62,6 +63,7 @@ public class FcsModule : IFcsModule
     {
         _emergencyMoveInProgress = false;
         _lastEmergencyMoveTime = Time.time;
+        fcs.ResetTransferBaseline();   // 重设检测基准, 防自己触发的移动 82ms 后二次误清理(2026-08-18)
         nextSweepTime = 0;   // 立即补派一轮
         OnGunIdle();
     }
@@ -71,6 +73,9 @@ public class FcsModule : IFcsModule
         window = new FcsWindow(fcs);
         radar = new TacticalRadar(fcs);
         overlay = new MapOverlay(fcs);
+        probe = new CbtProbe();
+        probe.Bind(fcs, radar);
+        MelonLogger.Msg($"[CBT] 当前档位: {fcs.Cbt.Mode} (Numpad8 切换)");
         fcs.EntityLocator = radar;   // 手动任务目标解析
         fcs.OnGunIdle += OnGunIdle;
         bool bound = fcs.TryBind();
@@ -109,8 +114,10 @@ public class FcsModule : IFcsModule
             var ti = t.Value;  // TargetInfo 是 struct,Nullable 解包
 
             // 软+静态目标先试集群(一发清多, 省弹); 无集群回单点。选择流程不动。
-            var fundMargin = fcs.Cbt.IsCbtMode ? fcs.Cbt.FundMargin : float.MaxValue;
-            var task = fcs.TryBuildClusterTask(ti, nextTargetId);
+            // Baseline(2026-08-18 用户): 不走集群(HE/HCHE 面杀伤), 一律 DRIL 点射。
+            var baseline = fcs.Cbt.IsCbtMode && fcs.Cbt.Mode == CbtMonitor.TestMode.Baseline;
+            var fundMargin = fcs.Cbt.IsCbtMode && !baseline ? fcs.Cbt.FundMargin : float.MaxValue;
+            var task = baseline ? null : fcs.TryBuildClusterTask(ti, nextTargetId);
             if (task == null) task = CreateAutoTask(ti, nextTargetId, fcs.Cbt.ShouldUseMaxCharge(), fundMargin);
             nextTargetId++;
             fcs.EnqueueTask(task);
@@ -170,6 +177,10 @@ public class FcsModule : IFcsModule
         // (旧弹先落地 ≥0.1s, 暂停不被立即解除)。
         if (phase == CbtMonitor.CbtPhase.Critical)
         {
+            // Baseline(2026-08-18 用户): 危急不收敛——不等待移动/不打 FDC, 照常狂射(下方常规路径)。
+            if (fcs.Cbt.Mode == CbtMonitor.TestMode.Baseline) { /* fall through */ }
+            else
+            {
             bool moveAvailable = fcs.Cbt.Mode != CbtMonitor.TestMode.FastNoMove
                 && fcs.Cbt.RequisitionPoints >= CbtMonitor.FundLine
                 && Time.time - _lastEmergencyMoveTime > EmergencyMoveCooldown;
@@ -184,15 +195,25 @@ public class FcsModule : IFcsModule
                 return t;
             }
             return null;
+            }
         }
 
-        // 流程 2 窗口内(Paused)与常规: 恢复正常排序派发。
-        // Paused 排序(FDC 8 > 火炮 7 > 3★ 6)即窗口内组合拳: 第一管 FDC 续暂停 +
-        // 第二管火炮(+30s 白赚), 双管 ReadyToFire 后由击发协调齐射。
+        // 一视同仁派发(2026-08-18 用户): 开局/暂停同一套——两管都装好, 双管就绪先后开炮、对齐同时落地。
+        // Paused 特殊处只有"免费": 暂停无时限(不开炮就挂在冻结值), 我方落地才解冻,
+        // 暂停中 = 免费装填期; 落地即解冻且照常 +30/门(无白赚); FDC 落地 = 结暂停+起新暂停。
+        // Baseline(2026-08-18 用户): 去光枷锁——不打 FDC(无暂停组合拳), 不打装甲/地下(DRIL 打不穿),
+        // 无基金线约束; 其余软目标(火炮>3★>…)全收, DRIL + max charge 狂射。
+        bool baseline = fcs.Cbt.IsCbtMode && fcs.Cbt.Mode == CbtMonitor.TestMode.Baseline;
         foreach (var t in radar.AliveHostiles)
         {
             if (fcs.Registry.IsHandled(t.EntityId)) continue;
             if (fcs.Registry.IsHandledNear(t.WorldPos, 0f)) continue;
+            if (baseline)
+            {
+                if (t.IsFdc) continue;
+                if (t.IsArmored || t.IsUnderground) continue;
+                return t;
+            }
             // FDC 扣留: 只在危急/暂停窗口放行(流程 1/2); 吃紧/宽裕期跳过
             if (t.IsFdc && !fcs.Cbt.FdcDispatchable()) continue;
             // FDC 一次只派一个: 双管同时打 2 个 FDC → 两发几乎同时落地, 暂停窗口重叠浪费
@@ -209,6 +230,7 @@ public class FcsModule : IFcsModule
     {
         fcs.Update();
         overlay?.Update();   // 地图 overlay: 打击中任务可视化(内部 1Hz 节流)
+        probe?.Update();     // CBT 判据探针(纯只读采样+事件, 内部 10Hz 节流)
 
         // 失焦/恢复诊断(2026-08-16 用户: Alt+Tab 后游戏未响应——怀疑失焦暂停 timeScale=0
         // 未恢复的假死)。日志能打 = 假死(Update 还在跑, 可强制恢复 timeScale);
@@ -316,9 +338,9 @@ public class FcsModule : IFcsModule
         else if (kb.numpad4Key.wasPressedThisFrame || (kb.ctrlKey.isPressed && kb.digit4Key.wasPressedThisFrame))
             fcs.FireTarget(4);
 
-        // Numpad 8: CBT 测试档位切换(2026-08-16 用户: 注释掉, 不再用测试档)
-        // if (kb.numpad8Key.wasPressedThisFrame || (kb.ctrlKey.isPressed && kb.digit8Key.wasPressedThisFrame))
-        //     fcs.Cbt.CycleTestMode();
+        // Numpad 8: CBT 档位切换(2026-08-18 恢复: 生产 → 快速 → 快速禁移动 → Baseline 循环)
+        if (kb.numpad8Key.wasPressedThisFrame || (kb.ctrlKey.isPressed && kb.digit8Key.wasPressedThisFrame))
+            fcs.Cbt.CycleTestMode();
 
         // Numpad 9: CBT 扫描探针(2026-08-16 用户: 注释掉, 临时调试已完成)
         // if (kb.numpad9Key.wasPressedThisFrame)
@@ -367,10 +389,12 @@ public class FcsModule : IFcsModule
     {
         fcs.OnGunIdle -= OnGunIdle;
         overlay?.Shutdown();   // 销毁全部 overlay 渲染对象
+        probe?.Dispose();      // 判据探针只读, 无协程; 清引用即可
         fcs.Dispose();
         window = null;
         radar = null;
         overlay = null;
+        probe = null;
     }
 
     /// <summary>找到所有蒸汽泄漏点，收紧最近阀门到指定值（0=拧紧, 999=全开）</summary>

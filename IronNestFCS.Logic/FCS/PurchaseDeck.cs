@@ -10,7 +10,7 @@ namespace IronNestFCS.Logic.FCS;
 public class PurchaseDeck {
     private Dictionary<BulletType, Transform> bulletCards = new();
     private Transform? _powderCard;
-    private Transform? _emergencyMoveCard;  // Cost==65: 紧急移动(转移阵地+重置倒计时)
+    private Transform? _emergencyMoveCard;  // Cost==65: 紧急移动(转移阵地, 倒计时冻结, 我方落地后按原值恢复, 不重置)
     private LookAtTarget? _buyButton;
 
     public bool HasEmergencyMoveCard => _emergencyMoveCard != null;
@@ -71,14 +71,14 @@ public class PurchaseDeck {
         yield return BuyCard(_powderCard, null);
     }
 
-    /// <summary>紧急移动: 采购 65 点卡(转移阵地 + 重置倒计时回 600s, 游戏节点图处理后续)。</summary>
+    /// <summary>紧急移动: 采购 65 点卡(转移阵地; 倒计时冻结, 我方落地后按原值恢复, 不重置——暂停无时限, 实测一次 ~278s 自然解冻, 2026-08-18)。</summary>
     public IEnumerator BuyEmergencyMove() {
         if (_emergencyMoveCard == null) {
             MelonLogger.Error("[FCS] BuyEmergencyMove: Can't find cost=65 card");
             yield break;
         }
         yield return BuyCard(_emergencyMoveCard, null);
-        MelonLogger.Msg("[FCS] 紧急移动卡已采购(65 点), 等待游戏转移阵地/重置倒计时");
+        MelonLogger.Msg("[FCS] 紧急移动卡已采购(65 点), 等待游戏转移阵地/冻结倒计时");
     }
 
     /// <summary>通用采购: 拖卡入槽 → 等卡稳定 → (可选拨炮管拨盘) → 点购买按钮。

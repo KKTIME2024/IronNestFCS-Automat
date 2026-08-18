@@ -124,8 +124,10 @@ public class FSC
     // 协程死亡(异常/被 Stop/子协程 yield 卡死)后, 槽位 LeftTask/RightTask 可能残留非 null,
     // TryDispatch 永远认为炮管忙 → 调度停摆且切 MANUAL/AUTO 都救不回(它们只改 autoMode)。
     // 协程内超时(装填 120s/瞄准 240s)依赖协程存活, 协程死了就失效 → 必须在协程外(Update)兜底。
+    private ArtilleryTask? _watchdogTaskLeft;
     private Progress _watchdogProgressLeft = Progress.Pending;
     private float _watchdogSinceLeft;
+    private ArtilleryTask? _watchdogTaskRight;
     private Progress _watchdogProgressRight = Progress.Pending;
     private float _watchdogSinceRight;
     private float _lastWatchdogTime;   // 看门狗 5s 节流(低频兜底, 阈值都是 90s+)
@@ -134,7 +136,8 @@ public class FSC
     private readonly Dictionary<Progress, float> _watchdogLimit = new()
     {
         [Progress.SelectingBullet] = 90f,   // 采购+回退链最长 ~4 次采购
-        [Progress.LoadingBullet] = 240f,    // 装填(转弹仓+推弹)机械时间, 预留余量
+        [Progress.LoadingBullet] = 120f,    // 装填(转弹仓+推弹)机械时间; 2026-08-18 事故后 240→120
+                                           // (健康 ≤~75s, 卡死时 60s 真实秒死等 → 30s)
         [Progress.LoadingPowder] = 120f,    // 装药采购循环
         [Progress.WaitLoading] = 150f,      // 等 CanFire(装填完成确认)
         [Progress.Aiming] = 300f,           // 瞄准跟踪(协程内已有 240s 超时, 此处兜底协程死亡)
@@ -378,8 +381,10 @@ public class FSC
     // 反编译确认: 真正的 CBT 倒计时是场景单例 CounterBatteryTimer(MonoBehaviour):
     //   totalDurationSeconds(初始时长, Inspector 配置=600) / _remainingSeconds / _running / _expired /
     //   _permanentlyStopped / endTime(double)
-    //   方法: Init(float) / StartTimer()(第一发落地后启动) / AddTime(float)(击杀+30s) /
-    //         SetTime(float)(紧急移动重置600) / PauseTimer() / UnpauseTimer()(FDC 击杀暂停) / PermanentlyStop()
+    //   方法: Init(float) / StartTimer()(第一发落地后启动) / AddTime(float)(击杀+30s, 按门计, 实测) /
+    //         SetTime(float)(2026-08-18 实测: 紧急移动不走 SetTime(600), 而是冻结、我方落地解冻后按原值恢复;
+    //         暂停无时限——不开炮就挂在冻结值, 实测一次 ~278s 自然解冻, 触发事件未定) /
+    //         PauseTimer()(紧急移动/FDC 击杀暂停) / UnpauseTimer() / PermanentlyStop()
     //   属性: TimeRemaining / IsRunning / IsExpired / IsPermanentlyStopped
     //   事件: onTimerStarted(after first impact) / onTimerTick(每帧, 剩余秒) / onTimerExpired /
     //         onTimerPaused / onTimerUnpaused / onTimerPermanentlyStopped
@@ -523,8 +528,8 @@ public class FSC
         if (Time.time - _lastWatchdogTime > 5f)
         {
             _lastWatchdogTime = Time.time;
-            WatchdogSlot(LeftTask, ref _watchdogProgressLeft, ref _watchdogSinceLeft);
-            WatchdogSlot(RightTask, ref _watchdogProgressRight, ref _watchdogSinceRight);
+            WatchdogSlot(LeftTask, ref _watchdogTaskLeft, ref _watchdogProgressLeft, ref _watchdogSinceLeft);
+            WatchdogSlot(RightTask, ref _watchdogTaskRight, ref _watchdogProgressRight, ref _watchdogSinceRight);
         }
         // 面板倒计时归零(=射表估计落地)的任务移出在飞列表
         if (InFlight.Count > 0)
@@ -562,8 +567,17 @@ public class FSC
 
     /// <summary>看门狗: 任务在某个进度停留超过阈值 → 协程可能已死亡, 强制取消并释放槽位恢复调度。
     /// 幂等: 协程若还活着, Canceled 会在下一个检查点退出(见 RunTaskRoutine); 已死的直接清引用。</summary>
-    private void WatchdogSlot(ArtilleryTask? task, ref Progress lastProgress, ref float since)
+    private void WatchdogSlot(ArtilleryTask? task, ref ArtilleryTask? lastTask, ref Progress lastProgress, ref float since)
     {
+        if (!ReferenceEquals(task, lastTask))
+        {
+            // 任务对象换了(上一任务结束, 新任务进槽) → 停留计时必须归零,
+            // 否则新任务继承旧任务的计时, 出生几秒就被旧账误杀(2026-08-18 实测事故)。
+            lastTask = task;
+            lastProgress = Progress.Pending;
+            since = 0f;
+            return;
+        }
         if (task == null || task.progress == Progress.Finished || task.progress == Progress.Canceled
             || task.progress == Progress.Failed || task.progress == Progress.Pending)
         {
@@ -691,8 +705,9 @@ public class FSC
             var charges = Math.Min(LeftGun.RemainingCharges(), RightGun.RemainingCharges());
             if (charges >= PowderReplenishThreshold) continue;
             // §3.6: 积分跌破基金线(90) → 停囤积, 保 65+25 重启资金。
+            // Baseline(2026-08-18 用户): 无基金线——max charge 需要装药供给, 照常囤(击杀自滚动)。
             // 日志节流(2026-08-15): 基金线以下是常态(紧急移动后 pts=24), 每 5s 刷屏会拖慢主线程。
-            if (Cbt.IsCbtMode && Cbt.FundMargin < 0f) {
+            if (Cbt.IsCbtMode && Cbt.Mode != CbtMonitor.TestMode.Baseline && Cbt.FundMargin < 0f) {
                 if (lastFundLogTime < 0 || Time.time - lastFundLogTime > 60f) {
                     MelonLogger.Msg($"[FCS] AutoReplenish: 基金线以下({Cbt.RequisitionPoints}<{CbtMonitor.FundLine}), 停止装药囤积");
                     lastFundLogTime = Time.time;
@@ -747,9 +762,8 @@ public class FSC
     /// <summary>
     /// 紧急移动(§3.5, 2026-08-15 实测修正): MoveZone 卡 = 暂停倒计时到下一发落地 + 转移阵地,
     /// 不是重置 600s。协程持 _deskLock 采购; 采购完成后等待倒计时暂停生效(IsRunning→false)
-    /// 或 15s 超时, 再等转移动画稳定(5s), 清洗双管炮管脏状态, 然后回调通知恢复派发。
-    /// 注意: 转移阵地会重置炮管状态(弹被卸下)——FcsModule 在转移期间暂停派发防卡死,
-    /// 且新任务开始前必须确认炮管已回到干净初始态(否则装填卡死)。
+    /// 或 15s 超时, 再等转移动画稳定(5s), 处理双管炮管(装填完毕的保留整发, 中间态清洗,
+    /// 2026-08-18 实测: 游戏转移不退膛内弹, 主动 CleanState 反会把机构搞 desync), 然后回调恢复派发。
     /// </summary>
     public void StartEmergencyMove(Action? onDone = null)
     {
@@ -787,13 +801,70 @@ public class FSC
         // 地图面仍在移动, 此刻派发的任务会把瞄准基准冻结在移动中的位置 → 转移后打空。
         // 等到基准连续两次采样(1s 间隔)一致(上限 10s)才放行; 引用不可用时无法判定直接放行。
         yield return WaitForMoveSettle(10f);
-        // 清洗双管炮管脏状态(残留弹/装药/状态机停在中间)——直接装填会卡 WaitLoading。
-        // 注意: 用户手动装的弹(Origin=Manual)不退壳——转移阵地后游戏自己会重置炮管,
-        // 但手动弹是用户资产, 保留(若游戏重置了也拦不住, 至少我们不主动退)。
-        if (LeftGun.Origin != GunSystem.ChamberOrigin.Manual) yield return LeftGun.CleanState();
-        if (RightGun.Origin != GunSystem.ChamberOrigin.Manual) yield return RightGun.CleanState();
-        MelonLogger.Msg($"[FCS] 紧急移动完成, 倒计时暂停={!Cbt.IsRunning} remain={Cbt.TimeRemaining:F1}s 炮管已清洗");
+        // 双管清洗(2026-08-18 修订: 装填完毕的炮管保留, 不主动清洗):
+        // 实测游戏转移阵地**不退膛内弹**(08-18 两局: 弹还在, 是我们退的)——我们的
+        // CleanState(退壳+状态机回退+动画重置)才是把机构搞 desync 的元凶: 之后
+        // CanLoadBullet=true 但推弹钮永不激活, 双管死循环装不上。
+        // 保留膛内整发: RunTaskRoutine 膛内状态评估会复用匹配弹(零装填直接击发)或自行退壳重装。
+        // 仅"机构空闲但无整发"(中间态/半装填/状态机卡住)才清洗。
+        yield return PreserveOrClean(LeftGun, "Left");
+        yield return PreserveOrClean(RightGun, "Right");
+        // 移动后就绪门(2026-08-18 事故): 游戏侧炮管重置可能慢于转移动画/清洗——
+        // 事故局清洗跑完后炮管仍 CanLoadBullet=false(推弹杆永不激活), 首个任务装填死等
+        // ~60s 真实秒, 倒计时流到 0 结束回合。
+        // 准绳 = IsTaskReady(膛内有整发 或 可装填); 暂停中等待 = 免费(时钟不烧)。
+        yield return WaitForLoadReady(LeftGun, 240f, "Left");
+        yield return WaitForLoadReady(RightGun, 240f, "Right");
+        MelonLogger.Msg($"[FCS] 紧急移动完成, 倒计时暂停={!Cbt.IsRunning} remain={Cbt.TimeRemaining:F1}s 炮管已清洗并就绪检查完毕");
         onDone?.Invoke();
+    }
+
+    /// <summary>转移后清洗策略: 机构空闲且膛内有整发 → 保留整发(任务会复用/自行退壳);
+    /// 其余(半装填/状态机中间态/机构还在动) → 完整 CleanState。</summary>
+    private IEnumerator PreserveOrClean(GunSystem gun, string tag)
+    {
+        if (gun.ReloadIdle() && !gun.IsChamberEmpty())
+        {
+            MelonLogger.Msg($"[FCS] {tag} 膛内整发 {gun.BulletInChamber()} 且机构空闲: 移动后保留, 不清洗(任务直接复用击发)");
+            yield break;
+        }
+        MelonLogger.Msg($"[FCS] {tag} 移动后清洗 (state={gun.CurrentReloadState} idle={gun.ReloadIdle()} chamber={gun.BulletInChamber() ?? "空"})");
+        yield return gun.CleanState();
+    }
+
+    /// <summary>等炮管真正可接任务(IsTaskReady 为准绳): 超时先做一次完整 CleanState 再等,
+    /// 仍不满足则 ERROR(带状态机诊断)+ 放行——派发后由 LoadBullet 快速失败 + 看门狗兜底,
+    /// 不无限拖住恢复(暂停窗结束后等就烧时钟了)。</summary>
+    private IEnumerator WaitForLoadReady(GunSystem gun, float gameSeconds, string tag)
+    {
+        var startedAt = Time.realtimeSinceStartup;
+        bool ready = false;
+        var deadline = Time.time + gameSeconds;
+        while (!ready && Time.time < deadline)
+        {
+            ready = gun.IsTaskReady();
+            if (!ready) yield return new WaitForSeconds(0.5f);
+        }
+        if (ready)
+        {
+            MelonLogger.Msg($"[FCS] {tag} 移动后就绪(耗时 {(Time.realtimeSinceStartup - startedAt):F1}s 真实)");
+            yield break;
+        }
+        MelonLogger.Error($"[FCS] {tag} 移动后 {gameSeconds} 游戏秒内仍不可装填 (state={gun.CurrentReloadState}), 执行完整清洗重试一次");
+        yield return gun.CleanState();
+        ready = false;
+        deadline = Time.time + 60f;
+        while (!ready && Time.time < deadline)
+        {
+            ready = gun.IsLoadReady();
+            if (!ready) yield return new WaitForSeconds(0.5f);
+        }
+        if (ready)
+        {
+            MelonLogger.Msg($"[FCS] {tag} 清洗后恢复就绪(总耗时 {(Time.realtimeSinceStartup - startedAt):F1}s 真实)");
+            yield break;
+        }
+        MelonLogger.Error($"[FCS] {tag} 移动后仍不可装填 (state={gun.CurrentReloadState}), 放行——首个任务将快速失败并重新派发");
     }
 
     /// <summary>等待转移基准完全静止: 真实炮塔在地图面下的局部位置连续两次采样(1s 间隔)一致。
@@ -816,8 +887,10 @@ public class FSC
     /// <summary>真实炮塔在地图面下的局部坐标(瞄准基准)。引用缺失返回 null。</summary>
     private Vector3? TurretLocalOnSurface()
     {
-        if (_mapSurface == null || _turretXf == null) return null;
-        return _mapSurface.InverseTransformPoint(_turretXf.position);
+        var surface = AimSurface;
+        var turretXf = AimTurretBase;
+        if (surface == null || turretXf == null) return null;
+        return surface.InverseTransformPoint(turretXf.position);
     }
 
     private Vector3? _lastTurretLocal;         // 手动转移检测: 上次采样基准
@@ -854,10 +927,19 @@ public class FSC
         yield return new WaitForSeconds(5f);   // 转移动画稳定
         RefreshAimGeometry();
         yield return WaitForMoveSettle(10f);
-        if (LeftGun.Origin != GunSystem.ChamberOrigin.Manual) yield return LeftGun.CleanState();
-        if (RightGun.Origin != GunSystem.ChamberOrigin.Manual) yield return RightGun.CleanState();
-        MelonLogger.Msg("[FCS] 手动转移清理完成, 炮管已清洗");
+        yield return PreserveOrClean(LeftGun, "Left");   // 装填完毕的炮管保留整发(2026-08-18)
+        yield return PreserveOrClean(RightGun, "Right");
+        MelonLogger.Msg("[FCS] 手动转移清理完成");
         onDone?.Invoke();
+    }
+
+    /// <summary>移动完成后重设手动转移检测的位置基准(2026-08-18): 自动紧急移动自己造成的
+    /// TurretLocation 突变会被检测器拿移动前的旧基准比 → 移动刚结束 82ms 后触发第二次
+    /// 清理(双清洗互相打架, 机构 desync)。重采基准后残余位移 ≈0, 不再误触发。</summary>
+    public void ResetTransferBaseline()
+    {
+        _lastTurretLocal = TurretLocalOnSurface();
+        _lastTransferCheckTime = Time.time;
     }
 
     /// <summary>弹种不可用回退链: DRIL→LE→HE(开局即有)→HCHE; AP 不可用 → HE。链尾返回自身。</summary>
@@ -1059,9 +1141,16 @@ public class FSC
                         : Mathf.Min(6, TargetLeadSolver.ChargeFor(
                             dLead + (task.IsMoving ? MovingDistanceMarginKm : 0f)));
                     int chamberCharges = gunSys.ChamberCharges();
-                    if (chamberCharges >= needCharges)
+                    // Baseline(2026-08-18): 高包膛内弹瞄近距目标 = 低角平弹道, 仰角公式
+                    // 低角外推误差随角度减小而增大 → 08-18 局近距目标 0/2 打空(#21/#14)
+                    // → Baseline 要求膛内装药与本发所需【精确相等】才复用; 非 Baseline
+                    // 维持原"够用就复用"规则(用户在产线档批准过)。
+                    var reuseOk = Cbt.Mode == CbtMonitor.TestMode.Baseline
+                        ? chamberCharges == needCharges
+                        : chamberCharges >= needCharges;
+                    if (reuseOk)
                     {
-                        // 装药够 → 复用。仰角按实际装药定格(装药多则调低, 打准)。
+                        // 装药匹配 → 复用。仰角按实际装药定格。
                         if (chamberCharges > needCharges)
                             MelonLogger.Msg($"[FCS] {leftRight} 膛内装药 {chamberCharges}包 > 所需 {needCharges}包, 复用并按实际装药瞄准");
                         reuseReady = true;
@@ -1069,7 +1158,8 @@ public class FSC
                     }
                     else
                     {
-                        MelonLogger.Msg($"[FCS] {leftRight} 膛内装药 {chamberCharges}包 < 所需 {needCharges}包, 退壳重装");
+                        var reuseWhy = Cbt.Mode == CbtMonitor.TestMode.Baseline ? ", Baseline 拒收高包平弹道" : "";
+                        MelonLogger.Msg($"[FCS] {leftRight} 膛内装药 {chamberCharges}包 不匹配 所需 {needCharges}包(dist={task.distance:F2}km{reuseWhy}), 退壳重装");
                         yield return gunSys.CleanState();   // 轮询确认弹出膛
                     }
                 }
@@ -1220,6 +1310,7 @@ public class FSC
             }
             turret.Aiming = true;   // 主流程接管方位(后台停止驱动)
             MelonLogger.Msg($"[FCS] {leftRight} 炮塔锁已持有, 进入瞄准/击发段");
+            RecheckStaticBearing(task, leftRight);   // 基准复核: 转移已漂移基准就在此纠正定格方位
 
             // 另一管当前目标方位与本管差 ≤ 容差 → 可齐射放行。移动目标只放行同实体:
             // 不同移动目标同方位会随时间发散 → 两管收敛循环抢舵(锁门原本防的正是抢舵)。
@@ -1233,6 +1324,20 @@ public class FSC
                 TryComputeAimTargets(other, out var ob, out _);
                 return Mathf.Abs(Mathf.DeltaAngle(b, ob)) <= SalvoBearingToleranceDeg;
             }
+
+            /// <summary>收敛/击发前复检的方位基准: 持锁者 = 自己 aim 方位; 同方位 pass-through
+            /// = 炮塔实际所在方位(另一管的 aim 方位, 与本管目标 ≤0.1° —— 齐射契约: 方位随
+            /// 轮、仰角/射程各管各的)。pass-through 窗结束(另一管任务已完) → 自己方位
+            /// (此刻后台预约应已抢到锁, 转向权自然回来)。</summary>
+            float SalvoRefBearing(float ownBearing)
+            {
+                if (turret.Acquired) return ownBearing;
+                var other = leftRight == LeftRight.Left ? RightTask : LeftTask;
+                if (other != null && other != task && TryComputeAimTargets(other, out var ob, out _))
+                    return ob;
+                return ownBearing;
+            }
+
             var aimTrackStart = Time.time;
             while (true) {
                 // 紧急移动/切手动: 转移阵地会重置炮管状态(弹被卸下), 瞄准永远不收敛 →
@@ -1249,11 +1354,17 @@ public class FSC
                         yield break;
                     }
                 }
-                Turret.SetDesiredRotation(bearingTarget);
+                // 击发段专舵(2026-08-18 用户: 臂杆由发射程序严格控制): 方位轮归持锁者独占
+                // 驱动。同方位 pass-through(非持锁)若也驱动自己 aim 方位(与持锁者差至多
+                // 0.1°) → 两管抢舵, 持锁者拉扳机时炮塔还在晃 → 7km 处 0.1° ≈ 12m 超击杀半径
+                // (08-18 #3 空炮); pass-through 管只驱动自己仰角, 收敛基准改对炮塔实际
+                // 方位(持锁者的 aim 方位), 否则对自家基准永远差 0.1° 不收敛(死锁)。
+                if (turret.Acquired)
+                    Turret.SetDesiredRotation(bearingTarget);
                 gunSys.SetElevationTarget(elevTarget);
-                // 收敛判定对"当前帧目标值"比较（移动时 aim 每帧漂移, 机构追上即收敛）
+                // 收敛判定对"当前帧目标值"(移动目标 aim 逐帧漂移, 机构追上 = 收敛)
                 if (gunSys.ElevationError(elevTarget) < AimToleranceDeg
-                    && Turret.AngleError(bearingTarget) < AimToleranceDeg
+                    && Turret.AngleError(SalvoRefBearing(bearingTarget)) < AimToleranceDeg
                     && gunSys.CanFire())
                     break;
                 // 兜底: 时间制(帧数在 60fps 下只有 1/60 秒/次, 帧数会误杀 32s 仰角摆动)
@@ -1295,11 +1406,11 @@ public class FSC
                 if (task.Canceled) { task.progress = Progress.Canceled; yield break; }
             }
 
-            // ===== 冻结窗口击发协调(流程 2, 2026-08-16 用户设定) =====
-            // 冻结窗口 = 暂停生效(开局倒计时未启动 / FDC 击杀 / MoveZone 卡):
-            // 倒计时不走, 炮弹飞行不烧时间——双管装填白嫖(最低装药, ToF 长=窗口长)
-            // → 齐射: 短 ToF 等长 ToF 先击发, 两发追求同时落地(窗口 = 长 ToF, 两发都白嫖;
-            // 开局时第一发落地 = StartTimer, 晚启动=更多白嫖); 炮塔转动/异方位无法同时
+            // ===== 冻结期击发协调(流程 2, 2026-08-16 用户设定, 2026-08-18 语义修订) =====
+            // 冻结期 = 暂停生效(开局倒计时未启动 / FDC 击杀 / MoveZone 卡):
+            // 倒计时不走, 炮弹飞行不烧时间——双管装填免费(最低装药, ToF 不烧钟)。
+            // → 齐射: 短 ToF 等长 ToF 先击发, 两发追求同时落地(那一次落地 = 解冻 + 照常 +30/门;
+            // 开局时第一发落地 = StartTimer, 晚启动=更多免费工时); 炮塔转动/异方位无法同时
             // 就绪时退化为先 Ready 先打(尽力而为)。手动强制 / 取消时跳过协调。
             bool freezeWindow = Cbt.IsPausedWindow || Cbt.Phase == CbtMonitor.CbtPhase.Opening;
             if (freezeWindow && _sceneInteractor.AutoFire && !task.forceFire && !task.Canceled)
@@ -1325,9 +1436,10 @@ public class FSC
                         && Turret.AngleError(otherTask.angel) < AimToleranceDeg;
                     if (otherAligned) break;
                     if (task.Canceled) break;
-                    // 维持瞄准(机构继续追 aim, 不丢收敛)
+                    // 维持瞄准(机构继续追 aim, 不丢收敛)——方位只由持锁者驱动(击发段专舵)
                     TryComputeAimTargets(task, out var pb, out var pe);
-                    Turret.SetDesiredRotation(pb);
+                    if (turret.Acquired)
+                        Turret.SetDesiredRotation(pb);
                     gunSys.SetElevationTarget(pe);
                     yield return null;
                 }
@@ -1346,7 +1458,8 @@ public class FSC
                         while (freezeWindow && Time.time < waitFor && !task.Canceled)
                         {
                             TryComputeAimTargets(task, out var pb, out var pe);
-                            Turret.SetDesiredRotation(pb);
+                            if (turret.Acquired)
+                                Turret.SetDesiredRotation(pb);
                             gunSys.SetElevationTarget(pe);
                             yield return null;
                         }
@@ -1378,27 +1491,83 @@ public class FSC
             // ===== 击发（turret 锁仍由后台持有, 直接确认+击发）=====
             task.progress = Progress.WaitingForFire;
             try {
-                // 臂杆按下与 5 个确认并行(开关是纯 0/1 flag, 一口气点完, 在臂杆保持期内完成)。
-                // 臂杆自动拉下 = 该炮管就绪(此刻方位/仰角已收敛, 不会在错误方向角臂下)
+                RecheckStaticBearing(task, leftRight);   // 击发前基准复核: 与上次调用(瞄准段入口)相隔 3-6s, 期间可能完成转移
+                if (task.Canceled) { task.progress = Progress.Canceled; yield break; }   // Canceled 闸门(fire-patches 移植)
+                // 臂杆按压与 5 项确认并行(开关是纯 0/1 标志, 一次性全点完, 耗时在 arm 保持期预算内)。
+                // arm 自动落下 = 该炮管就绪(此刻方位/仰角已收敛, 不对错误角 arm 落下)
                 yield return TriggerConsole.ArmWithFastConfirm(leftRight);
+                if (task.Canceled) { task.progress = Progress.Canceled; yield break; }   // arm 后已 Canceled 不再击发
+                // 臂完成时刻 = 本管"已武装"起点: 全局扳机击发所有已武装炮管,
+                // 空膛竞速(2026-08-18 用户报 bug, 角度接近时触发)的判定基准就是这一刻。
+                float myArmDone = Time.time;
+                var otherTask = leftRight == LeftRight.Left ? RightTask : LeftTask;
                 if (_sceneInteractor.AutoFire || task.forceFire) {
-                    // 确认序列 ~3-4s 期间 aim 漂移(机构追着走); 复检对齐后再打(5s 内追上, 否则尽力打)
+                    // 确认序列 ~3-4s 期间 aim 漂移(机构追着走); 复检对齐后再打(5s 内追上, 否则尽力打)。
+                    // pass-through(非持锁)只复检自家仰角: 方位是持锁者的独占职责(它已收敛,
+                    // 炮塔就在齐射线上), 对自家 aim 方位空等 5s 纯属浪费(0.1°×7km≈12m 恰好
+                    // 是齐射容差)。
                     var recheckStart = Time.time;
-                    while (!AlignOk(task, gunSys, AimToleranceDeg) && Time.time - recheckStart < 5f) yield return null;
+                    bool SalvoAligned() {
+                        TryComputeAimTargets(task, out var rb, out var re2);
+                        if (gunSys.ElevationError(re2) >= AimToleranceDeg) return false;
+                        return Turret.AngleError(SalvoRefBearing(rb)) < AimToleranceDeg;
+                    }
+                    while (!SalvoAligned() && !task.Canceled && Time.time - recheckStart < 5f) yield return null;
+                    if (task.Canceled) { task.progress = Progress.Canceled; yield break; }
                     if (turret.Acquired) {
+                        // 空膛护栏: 膛内无弹时拉扳机 = 空炮(无弹飞出但任务照常标记已击发
+                        // → 目标永不死 → 反复重派发)。宁可任务失败重装再来, 不打空炮。
+                        if (gunSys.IsChamberEmpty()) {
+                            MelonLogger.Error($"[FCS] {leftRight} 击发时空膛(弹丢失?), 放弃本任务防空炮");
+                            task.progress = Progress.Failed;
+                            yield break;
+                        }
                         // 只有持锁者拉扳机——全局扳机击发所有已武装炮管, 同方位齐射由它一并带出
+                        if (task.Canceled) { task.progress = Progress.Canceled; yield break; }   // 拉扳机前最后一道闸
+                        TryComputeAimTargets(task, out var fb, out var fe);
+                        MelonLogger.Msg($"[FCS] {leftRight} 击发: {task.entityId} dist={task.distance:F2} 药={task.LoadedCharge} azErr={Turret.AngleError(fb):F2}° elevErr={gunSys.ElevationError(fe):F2}° 膛={gunSys.BulletInChamber()}");
                         TriggerConsole.Fire();
                         yield return gunSys.WaitFire();
                     } else {
                         // 同方位非持锁者: 已武装, 等持锁者击发带自己(直接 Fire 会双重 AddEnergy);
                         // 持锁者若瞄准失败放弃 → 自己拿到锁后兜底击发, 防 AutoFire 下永久挂起
-                        while (!gunSys.IsPendingReload() && !turret.Acquired) {
-                            TryComputeAimTargets(task, out var b, out var e);
-                            Turret.SetDesiredRotation(b);
+                        var ptWaitStart = Time.time;
+                        while (!gunSys.IsPendingReload() && !turret.Acquired && !task.Canceled) {
+                            // pass-through: 只追自家仰角, 不碰方位轮(归持锁者独占)
+                            TryComputeAimTargets(task, out _, out var e);
                             gunSys.SetElevationTarget(e);
+                            // 兜底(2026-08-18 22:12 局实测): 集群任务 null(10.00) 在击发段
+                            // 空等 62 游戏秒被看门狗强杀(膛=0.0 state=CanFire)——退膛未注册
+                            // + 锁未到手 = 无限转。正常带出 ≤14s 注册退膛、持锁者打完锁立还,
+                            // 45 游戏秒已是 3 倍上限 → 超时判本发失败(finally 释放重派,
+                            // 弹从弹仓重装载再来), 绝不挂死。
+                            if (Time.time - ptWaitStart > 45f) {
+                                MelonLogger.Error($"[FCS] {leftRight} 击发段 pass-through 等待超时 45s(膛={gunSys.BulletInChamber() ?? "空"} pending={gunSys.IsPendingReload()} acq={turret.Acquired}), 放弃本发");
+                                task.progress = Progress.Failed;
+                                yield break;
+                            }
                             yield return null;
                         }
-                        if (!gunSys.IsPendingReload() && turret.Acquired) {
+                        // 空膛竞速修复: 持锁者的全局扳机把本管弹带走, 但本管的 pendingReload
+                        // 要等退膛机制走完才注册(滞后) → 自己先拿到锁且误判"未击发" → 再拉
+                        // 扳机 = 空炮(无弹飞出, 目标不死, 任务被反复重派发)。
+                        // 确定性判定(主线程协作调度无交错): 持锁者【先标记 Fired/FiredAt
+                        // 再还锁】, 扳机时刻 ≈ [FiredAt-0.7, FiredAt]。"本管已武装后对方拉了
+                        // 扳机" 且 "膛已空" ⇒ 本管弹已随那次齐射飞出 → 不再二次拉扳机
+                        // (这发是真实击发, 下方标记有效)。
+                        bool carriedInSalvo = otherTask != null && otherTask != task
+                            && otherTask.Fired && otherTask.FiredAt + 0.7f >= myArmDone
+                            && gunSys.IsChamberEmpty();
+                        if (carriedInSalvo)
+                            MelonLogger.Msg($"[FCS] {leftRight} 弹已被对方齐射带出, 跳过二次拉扳机");
+                        else if (!task.Canceled && !gunSys.IsPendingReload() && turret.Acquired) {
+                            if (gunSys.IsChamberEmpty()) {
+                                MelonLogger.Error($"[FCS] {leftRight} 兜底击发时空膛, 放弃本任务防空炮");
+                                task.progress = Progress.Failed;
+                                yield break;
+                            }
+                            TryComputeAimTargets(task, out var fb2, out var fe2);
+                            MelonLogger.Msg($"[FCS] {leftRight} 兜底击发: {task.entityId} dist={task.distance:F2} 药={task.LoadedCharge} azErr={Turret.AngleError(fb2):F2}° elevErr={gunSys.ElevationError(fe2):F2}° 膛={gunSys.BulletInChamber()}");
                             TriggerConsole.Fire();
                             yield return gunSys.WaitFire();
                         }
@@ -1406,12 +1575,14 @@ public class FSC
                 } else {
                     // AutoFire 关: 持续跟踪 aim(t) 直到玩家扳机——否则炮管停在旧点, 移动目标必偏。
                     // 静态任务此循环目标值恒定, 退化为无操作等待。
-                    while (!gunSys.IsPendingReload()) {
+                    // Canceled 检查点(fire-patches 移植): 看门狗取消后不再每帧驱动方位/占用资源。
+                    while (!gunSys.IsPendingReload() && !task.Canceled) {
                         TryComputeAimTargets(task, out var b, out var e);
                         Turret.SetDesiredRotation(b);
                         gunSys.SetElevationTarget(e);
                         yield return null;
                     }
+                    if (task.Canceled) { task.progress = Progress.Canceled; yield break; }
                 }
                 // 爆区覆盖: 落点 = 静态任务目标/集群质心, 移动任务提前点; 半径 = 该弹毁伤半径
                 Vector3 impactPos = task.position;
@@ -1520,21 +1691,46 @@ public class FSC
         _turretXf = MapTable.TurretLocation ?? MapTable.Turret;
     }
 
+    /// <summary>瞄准用地图面(懒自愈, 2026-08-16 fire-patches-abandoned 移植): 转移阵地销毁
+    /// 重建后缓存变 fake-null → Bearing/DistKm 静默返回 0 → 连续打错方向(azErr=0 查不出来)。
+    /// 仅在 null 时补一次 Find(一次性成本), 不做每帧 Find。</summary>
+    private Transform? AimSurface {
+        get {
+            if (_mapSurface == null)
+                _mapSurface = GameObject.Find("Draggable Surface")?.transform;
+            return _mapSurface;
+        }
+    }
+
+    /// <summary>瞄准用炮塔基准(懒自愈): MapTable.TurretLocation 自身是懒引用, fake-null 时
+    /// 重取自动拿到转移重建后的新对象, 不再静默用过期基准。</summary>
+    private Transform? AimTurretBase {
+        get {
+            if (_turretXf == null)
+                _turretXf = MapTable.TurretLocation ?? MapTable.Turret;
+            return _turretXf;
+        }
+    }
+
     /// <summary>世界坐标 → 距离 km（与 TacticalRadar.CalcDistance 同换算）</summary>
     private float DistKm(Vector3 worldPos) {
-        if (_mapSurface == null || _turretXf == null) return 0f;
+        var surface = AimSurface;
+        var turretXf = AimTurretBase;
+        if (surface == null || turretXf == null) return 0f;
         // 统一转地图面局部坐标: Piece 父=地图面(localPosition 即局部), TurretLocation 父=MapRoot
         // (须 InverseTransformPoint 世界坐标)。用世界坐标转换对两者都正确(2026-08-15)。
-        var turretLocal = _mapSurface.InverseTransformPoint(_turretXf.position);
-        var target = _mapSurface.InverseTransformPoint(worldPos) - turretLocal;
+        var turretLocal = surface.InverseTransformPoint(turretXf.position);
+        var target = surface.InverseTransformPoint(worldPos) - turretLocal;
         return target.magnitude * 3.8164f;
     }
 
     /// <summary>世界坐标 → 方位角（与 TacticalRadar.CalcAngle 同逻辑）</summary>
     private float Bearing(Vector3 worldPos) {
-        if (_mapSurface == null || _turretXf == null) return 0f;
-        var turretLocal = _mapSurface.InverseTransformPoint(_turretXf.position);
-        var target = _mapSurface.InverseTransformPoint(worldPos) - turretLocal;
+        var surface = AimSurface;
+        var turretXf = AimTurretBase;
+        if (surface == null || turretXf == null) return 0f;
+        var turretLocal = surface.InverseTransformPoint(turretXf.position);
+        var target = surface.InverseTransformPoint(worldPos) - turretLocal;
         var angle = Vector3.SignedAngle(target, Vector3.up, Vector3.forward);
         return angle < 0 ? angle + 360f : angle;
     }
@@ -1553,6 +1749,31 @@ public class FSC
         bearing = Bearing(aim);
         elev = TargetLeadSolver.Elevation(DistKm(aim), task.LoadedCharge);
         return true;
+    }
+
+    /// <summary>
+    /// 静态任务基准复核(2026-08-16 fire-patches-abandoned 移植, 打错方向三连发修复):
+    /// 任务方位/距离在派发时按当时雷达基准定格; 转移阵地/地图面重建后基准漂移 →
+    /// 连续朝错误方位开炮(azErr=0 看不出: 瞄准忠实追错误基准)。用当前几何对实体最新
+    /// 位置重算, 偏差 >1° 更新任务方位/距离并重瞄(集群任务=领队位置+集群偏移)。
+    /// </summary>
+    private void RecheckStaticBearing(ArtilleryTask task, LeftRight leftRight)
+    {
+        if (task.IsMoving || EntityLocator == null) return;
+        var trackId = task.TrackEntityId is { Length: > 0 } ? task.TrackEntityId : task.entityId;
+        if (string.IsNullOrEmpty(trackId)) return;
+        if (!EntityLocator.TryGetMotion(trackId, out var livePos, out _)) return;
+        var aimPos = task.ClusterOffset.sqrMagnitude > 0f ? livePos + task.ClusterOffset : livePos;
+        var freshBearing = Bearing(aimPos);
+        var drift = Mathf.Abs(Mathf.DeltaAngle(task.angel, freshBearing));
+        if (drift > 1f)
+        {
+            var freshDist = DistKm(aimPos);
+            MelonLogger.Warning($"[FCS] {leftRight} 基准复核: 方位漂移 {task.angel:F1}°→{freshBearing:F1}° " +
+                                $"dist {task.distance:F2}→{freshDist:F2}km, 更新重瞄(防打错方向)");
+            task.angel = freshBearing;
+            task.distance = freshDist;
+        }
     }
 
     /// <summary>

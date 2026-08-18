@@ -90,7 +90,7 @@ public class TacticalRadar
         // CBT 模式级指纹: 本轮是否扫到存活 FDC(icon 含 fire direction) → CbtMonitor 模式识别
         fcs.Cbt.HasFdc = targets.Any(t => t.IsFdc);
 
-        TacticalDecider.SortTargets(targets, fcs.Turret.LastSetAngle, fcs.Cbt.SortPhase);
+        TacticalDecider.SortTargets(targets, fcs.Turret.LastSetAngle, fcs.Cbt.SortPhase, fcs.Cbt.Mode == CbtMonitor.TestMode.Baseline);
         AliveHostiles = targets;
 
         var summary = string.Join(" | ", targets.Select(t =>

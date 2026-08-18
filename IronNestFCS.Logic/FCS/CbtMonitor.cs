@@ -8,11 +8,15 @@ namespace IronNestFCS.Logic.FCS;
 /// <summary>
 /// CBT(无尽反炮兵)模式状态机 —— docs/cbt-mode.md §3.0/§6 的参数化实现。
 ///
-/// 反编译铁证(2026-08-15):
+/// 反编译+运行时探针实证(2026-08-15 反编译; 2026-08-18 CbtProbe 实战日志钉死 R1/R2):
 ///   CounterBatteryTimer 是场景单例 MonoBehaviour(节点图 State_StartTimer 动态生成):
-///     - TimeRemaining(属性): 剩余秒数, 运行时严格每秒 -1 (实测 601.58→590.48)
-///     - IsRunning: 第一发炮弹落地后 StartTimer → true; 击杀 FDC → PauseTimer → false
-///     - 击杀火炮 +30s = AddTime(30); 紧急移动重置 = SetTime(600)
+///     - TimeRemaining(属性): 剩余秒数, 按游戏秒 -1; **CBT 实测 timeScale=4**(游戏600s≈真实150s)
+///     - IsRunning: 第一发炮弹落地后 StartTimer → true; 击杀 FDC / 紧急移动 → PauseTimer → false
+///     - 击杀火炮 +30s(=AddTime 净效果) + 征用点+5: **按门计, 14 样本全部精确 +30/+5**(R1 实测)
+    ///     - **紧急移动 = 冻结, 我方落地后按原值恢复, 不重置(2026-08-18 实测: 冻 232.8→恢复 232.5)**;
+    ///       暂停无时限(不开炮就挂着), 解冻事件驱动(用户钉死 2026-08-18; 实测一次 ~278s 自然解冻, 触发未定);
+///       旧注 "SetTime(600) 重置" 已被运行日志推翻 —— 别按地板重置建模
+///     - 倒计时**无 600s 上限**(实测加时后 656.6); 归零后 ~72 游戏秒 PERMANENTLY-STOPPED 结束回合
 ///     - IsExpired / IsPermanentlyStopped: 归零/永久停止
 ///   FireMission.RunningTimers 的 TimerValue(InitialSeconds=36000=10h, Current 每秒+1)
 ///   是通用计时器, 与 CBT 600s 无关 —— 不要读它。
@@ -31,18 +35,20 @@ public class CbtMonitor
     public const float ReserveAfterMove = 25f;  // 移动后重启资金
     public const float FundLine = 90f;          // 应急基金线 = 65 + 25
 
-    /// <summary>测试档位: 拉高决策阈值, 无需等倒计时自然降到 180/90s 即可观察吃紧/危急行为。
+    /// <summary>测试档位: 拉高决策阈值, 无需等倒计时自然降到 360/240s 即可观察吃紧/危急行为。
     /// Numpad8 循环切换(生产 → 快速 → 快速+禁紧急移动)。快速档: 600 开局切档后几乎立即
     /// 进入 Urgent/Critical(加时会把倒计时撑在 600+, 纯阈值追不上, 配合 Numpad7 手动触发)。</summary>
     public enum TestMode
     {
-        Production,      // 180/90s, 紧急移动启用
+        Production,      // 360/240s, 紧急移动启用
         Fast,            // 595/580s, 紧急移动启用
         FastNoMove,      // 595/580s, 紧急移动禁用(只观察 Critical 阶段判定)
+        Baseline,        // 2026-08-18 用户 baseline: 去光枷锁——开局/暂停双管对齐落地,
+                         // 之后一律 max charge + DRIL 狂射火炮; 无 FDC/无自动移动/无基金线/无集群
     }
 
-    /// <summary>当前测试档位(默认生产)。</summary>
-    public TestMode Mode { get; private set; } = TestMode.Production;
+    /// <summary>当前测试档位(默认 Baseline——2026-08-18 用户指定先跑 baseline, 比它差的回滚)。</summary>
+    public TestMode Mode { get; private set; } = TestMode.Baseline;
 
     /// <summary>吃紧阈值(测试档位拉高, 切档后立即进入 Urgent 观察双轨)。</summary>
     public float Urgent => Mode == TestMode.Production ? UrgentThreshold : 595f;
@@ -57,21 +63,27 @@ public class CbtMonitor
         {
             TestMode.Production => TestMode.Fast,
             TestMode.Fast => TestMode.FastNoMove,
+            TestMode.FastNoMove => TestMode.Baseline,
             _ => TestMode.Production
         };
-        MelonLogger.Msg($"[CBT] 测试档位: {Mode} (urgent<{Urgent:F0}s critical<{Critical:F0}s emergencyMove={Mode != TestMode.FastNoMove})");
+        MelonLogger.Msg($"[CBT] 测试档位: {Mode} (urgent<{Urgent:F0}s critical<{Critical:F0}s emergencyMove={Mode != TestMode.FastNoMove && Mode != TestMode.Baseline})");
     }
 
     public enum CbtPhase
     {
         None,      // 无计时器(剧情关/普通关/开局未生成) → 现有规则
         Opening,   // 计时器存在, 未启动(第一发未落地): 打最近火炮/3★, FDC 扣留
-        Wide,      // 宽裕期 >180s: 3★ 印钞 + 火炮循环, 最低装药, FDC 扣留
-        Urgent,    // 吃紧期 ≤180s: 火炮最优先 + 满装抢节奏 + FDC 组合拳
-        Critical,  // 危急 ≤90s: 满装 + FDC 组合拳 + 紧急移动兜底
-        Paused,    // 暂停窗口(FDC 击杀/MoveZone 卡, 2026-08-16): 倒计时冻结, 炮弹飞行不烧时间。
-                   // 与 Opening 的区别: 已启动过(_everStarted)。窗口内 FDC 续暂停最优先、
-                   // 火炮次之(暂停中击杀 = AddTime(30) 白赚, 不走秒)、最低装药(ToF 长=窗口长)。
+        Wide,      // 宽裕期 ≥360s: 3★ 印钞 + 火炮循环, 最低装药, FDC 扣留
+        Urgent,    // 吃紧期 <360s: 火炮最优先 + 满装抢节奏 + FDC 组合拳
+        Critical,  // 危急 <240s: 满装 + FDC 组合拳 + 紧急移动兜底(买暂停窗, 不重置)
+        Paused,    // 暂停(FDC 击杀/MoveZone 卡): 倒计时冻结, 炮弹飞行不烧时间。
+                   // 与 Opening 的区别: 已启动过(_everStarted)。
+                   // 规则(2026-08-18 用户钉死): 暂停**没有自己的时限**——不开炮就挂在冻结值
+                   // (如 232s)几小时不变; 解冻是事件驱动的: 我方炮弹落地。
+                   // 落地即解冻 = 暂停中击杀照常 +30(无白赚), 该炮落地处就是解冻点。
+                   // 用法 = 免费装填期: 两管都装好, 双管就绪后先后开炮、对齐同时落地——
+                   // 与开局/宽裕一视同仁, 没有"扣发等窗尽"一说。
+                   // FDC 击杀 = 结此暂停+起新暂停(续暂停链, 2026-08-16 用户确认)。
     }
 
     private CounterBatteryTimer? _timer;
@@ -125,7 +137,7 @@ public class CbtMonitor
     /// FDC 击杀 / MoveZone 卡都会暂停到下一发落地。暂停期间炮弹飞行不烧倒计时——
     /// 应最大化准备(装填双管)并控制开炮节奏, 让第一发落地正好是暂停解除点。
     /// 2026-08-16 修正: 用 _everStarted 而非 remain<599——暂停中击杀火炮 AddTime(+30) 会把
-    /// remain 弹回 ≥600(白赚 30s), 旧判定会误判成"未启动" → 暂停协调/扣留全部失效。</summary>
+    /// remain 被 +30 推进过 ≥600(无上限, 实测 656.6), 旧判定会误判成"未启动" → 暂停协调/扣留全部失效。</summary>
     public bool IsPausedWindow
     {
         get
@@ -200,8 +212,9 @@ public class CbtMonitor
         if (running || remain < InitialTime - 1f) _everStarted = true;
 
         // 状态级 = 倒计时走动。开局未启动且剩余≈600 → Opening。
-        // 暂停窗口(FDC 击杀/MoveZone, 启动过且停走) → Paused: FDC 续暂停最优先、
-        // 火炮次之(暂停中击杀 = +30s 白赚)、最低装药(ToF 长=窗口长)。
+        // 暂停(FDC 击杀/MoveZone, 启动过且停走) → Paused: 无时限, 事件驱动解冻(我方落地)。
+        // 与开局/宽裕期一视同仁: 两管都装好, 双管就绪先后开炮对齐同时落地;
+        // 暂停只是把这段工时变成免费, 落地即解冻并照常 +30/门。
         // 2026-08-16 保险: running 分支也带 IsCbtMode——非 CBT 关(剧情)即使有 timer 走动
         // 也强制 None(其他关卡不翻车, 阶段机只服务 CBT 模式)。
         if (!running && remain >= InitialTime - 1f && !_everStarted)
@@ -239,32 +252,38 @@ public class CbtMonitor
     }
 
     /// <summary>双轨装药(§3.2): 吃紧/危急(阈值内) → 满装 6 包抢节奏; 宽裕/开局 → 最低装药攒钱。
-    /// 非 CBT 模式一律最低装药(现有行为)。</summary>
+    /// Baseline 档: 每发按"够到本发距离的最低装药"(TargetLeadSolver.ChargeFor, 上限 6 包)定——
+    /// 2026-08-18 用户原设"一律满装", 当日局 #21(5.57km)/#14(4.49km) 满装平弹道两管 0/2
+    /// (仰角公式按"装药=0.2×距离"配对标定于 36–60°, 近距强 6 包低角外推超射打空)
+    /// → "下一发该打什么"的装药参数由本发距离决定。非 Baseline/非 CBT 走原规则。</summary>
     public bool ShouldUseMaxCharge()
     {
-        return IsCbtMode && Phase is CbtPhase.Urgent or CbtPhase.Critical;
+        if (!IsCbtMode) return false;
+        if (Mode == TestMode.Baseline) return false;
+        return Phase is CbtPhase.Urgent or CbtPhase.Critical;
     }
 
     /// <summary>FDC 是否可派(§3.3/§3.4): 非危急(阈值外)绝不打——开局打=浪费, 宽裕期打=浪费暂停储备。
-    /// 吃紧/危急才放行作暂停组合拳。暂停窗口(Paused)也放行——窗口内击杀 FDC = 续暂停,
-    /// 把 FDC 暂停/MoveZone 窗口免费延长, 正是暂停储备的使用(2026-08-16 用户机制确认)。
-    /// 测试档(Fast/FastNoMove)直接放行(2026-08-16): 生产档 180 阈值下倒计时必然降到吃紧;
+    /// 吃紧/危急才放行作暂停组合拳。暂停窗口(Paused)也放行——窗口内击杀 FDC = 结窗+起新窗
+    /// (净效果续暂停; 2026-08-18 用户规则下"落地解窗"对 FDC 同样适用, 新旧语义在此自洽)。
+    /// 测试档(Fast/FastNoMove)直接放行(2026-08-16): 生产档 360 阈值下倒计时必然降到吃紧;
     /// Fast 档 595 阈值 + 火炮击杀 +30s 会把 remain 撑回 600+ → 永远 Wide → FDC 扣留看不到
     /// 发射——测试档绕开扣留直接观察 FDC 行为(排序仍垫底, 其他目标优先)。</summary>
     public bool FdcDispatchable()
     {
         if (!IsCbtMode) return false;
+        if (Mode == TestMode.Baseline) return false;   // baseline 不打 FDC(用户 2026-08-18)
         // 只在危急/暂停窗口放行(2026-08-16 用户): FDC 是危急专属储备——吃紧期打火炮 +30s
-        // 维持倒计时更实在, FDC 留危急当免费暂停(生产 <90s / Fast <580s)。
+        // 维持倒计时更实在, FDC 留危急当免费暂停(生产 <240s / Fast <580s)。
         // 暂停窗口放行 = 危急的延续(窗口内 FDC 续暂停, 用户权衡后加回)。测试档同规则。
         return Phase is CbtPhase.Critical or CbtPhase.Paused;
     }
 
     /// <summary>紧急移动触发条件(§3.5): 危急(阈值内) 且积分 ≥ 65+25。
-    /// 测试档 FastNoMove 禁用(只观察 Critical 阶段判定, 不真花钱)。</summary>
+    /// 测试档 FastNoMove 禁用(只观察 Critical 阶段判定, 不真花钱); Baseline 禁用(用户 2026-08-18)。</summary>
     public bool ShouldEmergencyMove()
     {
-        return Mode != TestMode.FastNoMove
+        return Mode != TestMode.FastNoMove && Mode != TestMode.Baseline
             && IsCbtMode && Phase == CbtPhase.Critical && RequisitionPoints >= FundLine;
     }
 
