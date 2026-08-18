@@ -53,8 +53,6 @@ public class FSC
     /// <summary>人机协同注册表: 在飞/排队/炮上目标的统一承包登记(手动+自动共用)</summary>
     public readonly TargetRegistry Registry = new();
 
-    /// <summary>CBT(无尽反炮兵)模式状态机: 阶段识别/双轨装药/FDC 扣留/紧急移动/基金纪律。</summary>
-    public readonly CbtMonitor Cbt = new();
 
     /// <summary>已击发、炮弹仍在飞行中的任务(面板倒计时显示)。归零(=射表估计落地)时移除。</summary>
     public readonly List<ArtilleryTask> InFlight = new();
@@ -377,145 +375,9 @@ public class FSC
         catch (Exception ex) { MelonLogger.Warning($"[FCS] TimerValue dump: {ex.GetType().Name}: {ex.Message}"); }
     }
 
-    // ===== CBT 扫描探针 v2(定位 CounterBatteryTimer 单例后删除) =====
-    // 反编译确认: 真正的 CBT 倒计时是场景单例 CounterBatteryTimer(MonoBehaviour):
-    //   totalDurationSeconds(初始时长, Inspector 配置=600) / _remainingSeconds / _running / _expired /
-    //   _permanentlyStopped / endTime(double)
-    //   方法: Init(float) / StartTimer()(第一发落地后启动) / AddTime(float)(击杀+30s, 按门计, 实测) /
-    //         SetTime(float)(2026-08-18 实测: 紧急移动不走 SetTime(600), 而是冻结、我方落地解冻后按原值恢复;
-    //         暂停无时限——不开炮就挂在冻结值, 实测一次 ~278s 自然解冻, 触发事件未定) /
-    //         PauseTimer()(紧急移动/FDC 击杀暂停) / UnpauseTimer() / PermanentlyStop()
-    //   属性: TimeRemaining / IsRunning / IsExpired / IsPermanentlyStopped
-    //   事件: onTimerStarted(after first impact) / onTimerTick(每帧, 剩余秒) / onTimerExpired /
-    //         onTimerPaused / onTimerUnpaused / onTimerPermanentlyStopped
-    // FireMission.RunningTimers 的 TimerValue(InitialSeconds=36000=10h, CurrentSeconds 每秒+1) 是
-    // 另一个通用计时器, 与 600s CBT 无关 —— v1 探针找错了对象, v2 改读 CounterBatteryTimer。
-
-    public void CbtScanProbe()
-    {
-        _runningCoroutines.Add(MelonCoroutines.Start(CbtSampleLoop()));
-    }
-
-    /// <summary>每秒采样 CounterBatteryTimer 状态 x12: 看 TimeRemaining 递减速率/暂停/重置。
-    /// 顺带 dump FireMission.RunningTimers keys(确认 36000 计时器身份) + UI 文本(TMP)。</summary>
-    private IEnumerator CbtSampleLoop()
-    {
-        MelonLogger.Msg("[CBT-SCAN] === v2: CounterBatteryTimer 每秒采样 x12 ===");
-        for (int i = 0; i < 12; i++)
-        {
-            DumpCbtTimer(i);
-            yield return new WaitForSeconds(1f);
-        }
-        MelonLogger.Msg("[CBT-SCAN] === v2 done ===");
-    }
-
-    private void DumpCbtTimer(int tick)
-    {
-        try
-        {
-            var cbt = Object.FindObjectOfType<CounterBatteryTimer>();
-            if (cbt == null)
-            {
-                MelonLogger.Msg($"[CBT-SCAN] t={tick}: CounterBatteryTimer NOT FOUND in scene");
-                DumpTimerKeys(tick);
-                DumpTimerTexts();
-                return;
-            }
-            var t = cbt.GetType();
-            var total = t.GetField("totalDurationSeconds")?.GetValue(cbt);
-            var remain = t.GetProperty("TimeRemaining")?.GetValue(cbt);
-            var running = t.GetProperty("IsRunning")?.GetValue(cbt);
-            var expired = t.GetProperty("IsExpired")?.GetValue(cbt);
-            var permStopped = t.GetProperty("IsPermanentlyStopped")?.GetValue(cbt);
-            var endTime = t.GetField("endTime", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(cbt);
-            MelonLogger.Msg($"[CBT-SCAN] t={tick}: total={total} remain={remain} running={running} expired={expired} permStop={permStopped} endTime={endTime} go={cbt.gameObject.name}");
-            if (tick == 0)
-            {
-                // 首帧额外 dump 全部字段+属性(识别暂停/启动标志)
-                foreach (var f in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
-                {
-                    if (f.Name is "ObjectClass" or "Pointer" or "WasCollected") continue;
-                    try { MelonLogger.Msg($"[CBT-SCAN]   .{f.Name} ({f.FieldType.Name}) = {f.GetValue(cbt)}"); }
-                    catch (Exception ex) { MelonLogger.Msg($"[CBT-SCAN]   .{f.Name} -> {ex.GetType().Name}"); }
-                }
-                DumpTimerKeys(tick);
-                DumpTimerTexts();
-            }
-        }
-        catch (Exception ex)
-        {
-            MelonLogger.Msg($"[CBT-SCAN] t={tick}: err {ex.GetType().Name}: {ex.Message}");
-        }
-    }
-
-    /// <summary>RunningTimers 字典 keys + 每个 TimerValue 数值 —— 确认 36000 计时器是什么。</summary>
-    private void DumpTimerKeys(int tick)
-    {
-        try
-        {
-            var fm = GameObject.Find("Fire Mission Root")?.GetComponent<FireMission>();
-            if (fm == null) { MelonLogger.Msg($"[CBT-SCAN] t={tick}: no FireMission"); return; }
-            var timersProp = fm.GetType().GetProperty("RunningTimers", BindingFlags.Public | BindingFlags.Instance);
-            if (timersProp == null) return;
-            var timers = timersProp.GetValue(fm);
-            if (timers == null) { MelonLogger.Msg($"[CBT-SCAN] t={tick}: RunningTimers null"); return; }
-            var countProp = timers.GetType().GetProperty("Count", BindingFlags.Public | BindingFlags.Instance);
-            MelonLogger.Msg($"[CBT-SCAN] t={tick}: RunningTimers count={(int)countProp!.GetValue(timers)!}");
-
-            var getEnum = timers.GetType().GetMethod("GetEnumerator", BindingFlags.Public | BindingFlags.Instance);
-            var enumerator = getEnum!.Invoke(timers, null);
-            var moveNext = enumerator!.GetType().GetMethod("MoveNext", BindingFlags.Public | BindingFlags.Instance);
-            var currentProp = enumerator.GetType().GetProperty("Current", BindingFlags.Public | BindingFlags.Instance);
-            int i = 0;
-            while ((bool)moveNext!.Invoke(enumerator, null)!)
-            {
-                var kvp = currentProp!.GetValue(enumerator);
-                if (kvp == null) continue;
-                var keyProp = kvp.GetType().GetProperty("Key", BindingFlags.Public | BindingFlags.Instance);
-                var valueProp = kvp.GetType().GetProperty("Value", BindingFlags.Public | BindingFlags.Instance);
-                var key = keyProp?.GetValue(kvp)?.ToString() ?? "?";
-                var tv = valueProp?.GetValue(kvp);
-                i++;
-                if (tv == null) { MelonLogger.Msg($"[CBT-SCAN] t={tick}:   [{key}] = null"); continue; }
-                var initial = tv.GetType().GetProperty("InitialSeconds")?.GetValue(tv);
-                var current = tv.GetType().GetProperty("CurrentSeconds")?.GetValue(tv);
-                var started = tv.GetType().GetProperty("StartedAt")?.GetValue(tv);
-                MelonLogger.Msg($"[CBT-SCAN] t={tick}:   [{key}] Initial={initial} Current={current} StartedAt={started}");
-            }
-            if (i == 0) MelonLogger.Msg($"[CBT-SCAN] t={tick}:   (no entries)");
-        }
-        catch (Exception ex) { MelonLogger.Msg($"[CBT-SCAN] t={tick}: keys err {ex.GetType().Name}: {ex.Message}"); }
-    }
-
-    /// <summary>扫描场景里所有 Text/TMP 文本, 找时间格式的 UI 显示(倒计时), 与 TimerValue 对照。</summary>
-    private void DumpTimerTexts()
-    {
-        int shown = 0;
-        foreach (var go in Object.FindObjectsOfType<GameObject>(true))
-        {
-            string? t = null;
-            var txt = go.GetComponent<Text>();
-            if (txt != null) t = txt.text;
-            else
-            {
-                var tmp = go.GetComponent<Il2CppTMPro.TextMeshProUGUI>();
-                if (tmp != null) t = tmp.text;
-            }
-            if (string.IsNullOrEmpty(t)) continue;
-            t = t.Trim();
-            if (t.Length > 24) continue;
-            // 时间格式: 纯数字/冒号分隔(如 600:00, 09:58:22)
-            if (!System.Text.RegularExpressions.Regex.IsMatch(t, @"^[\d:\s.,]+$")) continue;
-            if (shown++ >= 20) { MelonLogger.Msg("[CBT-SCAN]   ...texts truncated"); break; }
-            MelonLogger.Msg($"[CBT-SCAN]   UI text [{go.name}] = \"{t}\"");
-        }
-        if (shown == 0) MelonLogger.Msg("[CBT-SCAN]   no timer-like UI texts found");
-    }
 
     public void Update() {
         _sceneInteractor.Update();
-        // CBT 阶段机(0.5s 节流, 驱动双轨装药/优先级/FDC 扣留/紧急移动)
-        Cbt.Update();
         // 膛内弹来源检测(5s 节流): 膛内有弹但来源 Unknown(开局/退壳后) → 用户手动装的,
         // 标 Manual 供派发保护(自动任务不碰用户屯的弹)。活动中的自动任务跳过(见 CheckChamberOrigin)。
         if (Time.time - _lastOriginCheckTime > 5f)
@@ -698,23 +560,11 @@ public class FSC
     /// CBT 基金纪律(§3.6): 跌破基金线时停止装药囤积(只用 DRIL 维持循环, 任务内按需仍会买)。
     /// </summary>
     private IEnumerator ReplenishPowderLoop() {
-        var lastFundLogTime = -1f;   // 基金线以下日志节流: 只打一次, 恢复后重置
         while (true) {
             yield return new WaitForSeconds(PowderCheckInterval);
-            // 取两管炮装药的最小值:任一管低于阈值就补
+            // 取两管炮装药的最小值, 任一管低于阈值就补
             var charges = Math.Min(LeftGun.RemainingCharges(), RightGun.RemainingCharges());
             if (charges >= PowderReplenishThreshold) continue;
-            // §3.6: 积分跌破基金线(90) → 停囤积, 保 65+25 重启资金。
-            // Baseline(2026-08-18 用户): 无基金线——max charge 需要装药供给, 照常囤(击杀自滚动)。
-            // 日志节流(2026-08-15): 基金线以下是常态(紧急移动后 pts=24), 每 5s 刷屏会拖慢主线程。
-            if (Cbt.IsCbtMode && Cbt.Mode != CbtMonitor.TestMode.Baseline && Cbt.FundMargin < 0f) {
-                if (lastFundLogTime < 0 || Time.time - lastFundLogTime > 60f) {
-                    MelonLogger.Msg($"[FCS] AutoReplenish: 基金线以下({Cbt.RequisitionPoints}<{CbtMonitor.FundLine}), 停止装药囤积");
-                    lastFundLogTime = Time.time;
-                }
-                continue;
-            }
-            lastFundLogTime = -1f;
             MelonLogger.Msg(
                 $"[FCS] AutoReplenish: powder charges {charges} < {PowderReplenishThreshold}, buying one");
             yield return _deskLock.Acquire();
@@ -759,65 +609,6 @@ public class FSC
     /// ponytail: 只列 STAR; 其他非杀伤弹(SMOKE 等)出现同样屏蔽再扩展。</summary>
     private static bool IsKillContract(ArtilleryTask t) => t.bulletType != BulletType.STAR;
 
-    /// <summary>
-    /// 紧急移动(§3.5, 2026-08-15 实测修正): MoveZone 卡 = 暂停倒计时到下一发落地 + 转移阵地,
-    /// 不是重置 600s。协程持 _deskLock 采购; 采购完成后等待倒计时暂停生效(IsRunning→false)
-    /// 或 15s 超时, 再等转移动画稳定(5s), 处理双管炮管(装填完毕的保留整发, 中间态清洗,
-    /// 2026-08-18 实测: 游戏转移不退膛内弹, 主动 CleanState 反会把机构搞 desync), 然后回调恢复派发。
-    /// </summary>
-    public void StartEmergencyMove(Action? onDone = null)
-    {
-        _runningCoroutines.Add(MelonCoroutines.Start(EmergencyMoveRoutine(onDone)));
-    }
-
-    private IEnumerator EmergencyMoveRoutine(Action? onDone)
-    {
-        if (!_purchaseDeck.HasEmergencyMoveCard)
-        {
-            MelonLogger.Error("[FCS] 紧急移动: 未找到 65 点采购卡, 跳过自动触发");
-            onDone?.Invoke();
-            yield break;
-        }
-        yield return _deskLock.Acquire();
-        try
-        {
-            yield return _purchaseDeck.BuyEmergencyMove();
-        }
-        finally
-        {
-            _deskLock.Release();
-        }
-        // 等游戏暂停倒计时(MoveZone 卡 → PauseTimer); 最多等 15s
-        for (var i = 0; i < 30; i++)
-        {
-            yield return new WaitForSeconds(0.5f);
-            if (!Cbt.IsRunning) break;
-        }
-        // 等转移动画稳定: 倒计时暂停≠转移完成, 立即派发会在炮管被重置时装填 → 卡死
-        yield return new WaitForSeconds(5f);
-        // 几何引用刷新(一次性): 转移可能重建 Piece/地图面, 缓存引用失效 → 瞄准基准错误
-        RefreshAimGeometry();
-        // 移动中禁止创建任务(2026-08-16 用户): 固定 5s 未必覆盖完整转移动画——若真实炮塔/
-        // 地图面仍在移动, 此刻派发的任务会把瞄准基准冻结在移动中的位置 → 转移后打空。
-        // 等到基准连续两次采样(1s 间隔)一致(上限 10s)才放行; 引用不可用时无法判定直接放行。
-        yield return WaitForMoveSettle(10f);
-        // 双管清洗(2026-08-18 修订: 装填完毕的炮管保留, 不主动清洗):
-        // 实测游戏转移阵地**不退膛内弹**(08-18 两局: 弹还在, 是我们退的)——我们的
-        // CleanState(退壳+状态机回退+动画重置)才是把机构搞 desync 的元凶: 之后
-        // CanLoadBullet=true 但推弹钮永不激活, 双管死循环装不上。
-        // 保留膛内整发: RunTaskRoutine 膛内状态评估会复用匹配弹(零装填直接击发)或自行退壳重装。
-        // 仅"机构空闲但无整发"(中间态/半装填/状态机卡住)才清洗。
-        yield return PreserveOrClean(LeftGun, "Left");
-        yield return PreserveOrClean(RightGun, "Right");
-        // 移动后就绪门(2026-08-18 事故): 游戏侧炮管重置可能慢于转移动画/清洗——
-        // 事故局清洗跑完后炮管仍 CanLoadBullet=false(推弹杆永不激活), 首个任务装填死等
-        // ~60s 真实秒, 倒计时流到 0 结束回合。
-        // 准绳 = IsTaskReady(膛内有整发 或 可装填); 暂停中等待 = 免费(时钟不烧)。
-        yield return WaitForLoadReady(LeftGun, 240f, "Left");
-        yield return WaitForLoadReady(RightGun, 240f, "Right");
-        MelonLogger.Msg($"[FCS] 紧急移动完成, 倒计时暂停={!Cbt.IsRunning} remain={Cbt.TimeRemaining:F1}s 炮管已清洗并就绪检查完毕");
-        onDone?.Invoke();
-    }
 
     /// <summary>转移后清洗策略: 机构空闲且膛内有整发 → 保留整发(任务会复用/自行退壳);
     /// 其余(半装填/状态机中间态/机构还在动) → 完整 CleanState。</summary>
@@ -1141,13 +932,9 @@ public class FSC
                         : Mathf.Min(6, TargetLeadSolver.ChargeFor(
                             dLead + (task.IsMoving ? MovingDistanceMarginKm : 0f)));
                     int chamberCharges = gunSys.ChamberCharges();
-                    // Baseline(2026-08-18): 高包膛内弹瞄近距目标 = 低角平弹道, 仰角公式
-                    // 低角外推误差随角度减小而增大 → 08-18 局近距目标 0/2 打空(#21/#14)
-                    // → Baseline 要求膛内装药与本发所需【精确相等】才复用; 非 Baseline
-                    // 维持原"够用就复用"规则(用户在产线档批准过)。
-                    var reuseOk = Cbt.Mode == CbtMonitor.TestMode.Baseline
-                        ? chamberCharges == needCharges
-                        : chamberCharges >= needCharges;
+                    // 膛内装药与本发所需【精确相等】才复用: 高包膛内弹瞄近距目标 = 低角平弹道,
+                    // 仰角公式低角外推误差随角度减小而增大(2026-08-18 局近距目标 0/2 打空 #21/#14)。
+                    var reuseOk = chamberCharges == needCharges;
                     if (reuseOk)
                     {
                         // 装药匹配 → 复用。仰角按实际装药定格。
@@ -1158,8 +945,7 @@ public class FSC
                     }
                     else
                     {
-                        var reuseWhy = Cbt.Mode == CbtMonitor.TestMode.Baseline ? ", Baseline 拒收高包平弹道" : "";
-                        MelonLogger.Msg($"[FCS] {leftRight} 膛内装药 {chamberCharges}包 不匹配 所需 {needCharges}包(dist={task.distance:F2}km{reuseWhy}), 退壳重装");
+                        MelonLogger.Msg($"[FCS] {leftRight} 膛内装药 {chamberCharges}包 不匹配 所需 {needCharges}包(dist={task.distance:F2}km, 拒收高包平弹道), 退壳重装");
                         yield return gunSys.CleanState();   // 轮询确认弹出膛
                     }
                 }
@@ -1412,7 +1198,8 @@ public class FSC
             // → 齐射: 短 ToF 等长 ToF 先击发, 两发追求同时落地(那一次落地 = 解冻 + 照常 +30/门;
             // 开局时第一发落地 = StartTimer, 晚启动=更多免费工时); 炮塔转动/异方位无法同时
             // 就绪时退化为先 Ready 先打(尽力而为)。手动强制 / 取消时跳过协调。
-            bool freezeWindow = Cbt.IsPausedWindow || Cbt.Phase == CbtMonitor.CbtPhase.Opening;
+            // 冻结窗(CBT 暂停机制, 2026-08 拆分移出 dev → feature/cbt-v2): 纯反炮兵无暂停窗, 恒 false。
+            bool freezeWindow = false;
             if (freezeWindow && _sceneInteractor.AutoFire && !task.forceFire && !task.Canceled)
             {
                 // 等另一管也 ReadyToFire(CanFire), 或暂停即将解除(有其他在飞弹即将落地)
@@ -1877,9 +1664,6 @@ public class FSC
         // DRIL 基准纯成本是 HE 4/HCHE 6, 时间补偿降 1 是 3/5——再放宽到 2/4 图个热闹。
         bool heValid = he.HasValue && he.Value.Count >= 2;
         bool hcheValid = hche.HasValue && hche.Value.Count >= 4;
-        // CBT 基金纪律(§3.6): HCHE(18 点) 仅扣款后仍 ≥ 基金线才用; 跌破基金线降级 HE。
-        if (Cbt.IsCbtMode && Cbt.FundMargin < ShellData.Cost(BulletType.HCHE))
-            hcheValid = false;
         // 性价比选弹: 每申请点覆盖目标数 = 覆盖数/成本(HE 10 点, HCHE 18 点)。
         // 交叉相乘免浮点: hche.Count×10 > he.Count×18 → HCHE 每点覆盖更多 → 升级。
         // 例: HE 3 vs HCHE 5 → 3×18=54 > 5×10=50 → HE 更划算(保持); HE 2 vs HCHE 5 → 2×18<5×10 → HCHE。
@@ -1928,7 +1712,7 @@ public class FSC
             distance = DistKm(impact),
             position = impact,
             bulletType = shell,
-            useMaxCharge = Cbt.ShouldUseMaxCharge(),        // CBT 双轨装药(§3.2): 吃紧期满装抢节奏
+            useMaxCharge = false,                            // 纯反炮兵: 最低装药(满装唯一收益是缩短 ToF, 无竞速需求)
             Source = TaskSource.Auto,
             BlastRadiusKm = ShellData.BlastRadiusKm(shell),
             // 移动集群: 冻结快照带整簇(装填期采纳无必要——速度已知), 提前量路径击发前重算提前点。

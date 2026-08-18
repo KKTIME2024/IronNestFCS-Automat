@@ -87,10 +87,7 @@ public class TacticalRadar
         // 击杀确认: 死亡目标的登记立即解除(打中的目标下轮扫描恢复可拣)
         fcs.Registry.Reconcile(aliveIds);
 
-        // CBT 模式级指纹: 本轮是否扫到存活 FDC(icon 含 fire direction) → CbtMonitor 模式识别
-        fcs.Cbt.HasFdc = targets.Any(t => t.IsFdc);
-
-        TacticalDecider.SortTargets(targets, fcs.Turret.LastSetAngle, fcs.Cbt.SortPhase, fcs.Cbt.Mode == CbtMonitor.TestMode.Baseline);
+        TacticalDecider.SortTargets(targets, fcs.Turret.LastSetAngle);
         AliveHostiles = targets;
 
         var summary = string.Join(" | ", targets.Select(t =>

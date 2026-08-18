@@ -36,26 +36,19 @@ public static class TacticalDecider
 
     /// <summary>
     /// 排序：优先级降序 → 同优先级按总机械时间升序。
-    /// 实测：高低机 0→60 = 32s (1.875/s)，方向机 84→0° = 25s (3.36°/s)。
-    /// cost ≈ 仰角上下时间 + 炮塔转动时间 = distance×2.56 + angleDelta×0.30（秒）
-    /// CBT 双轨(§3.3)：宽裕期 3★ 印钞最高、吃紧期火炮(+30s)最高、FDC 仅吃紧放行。
+    /// 实测：高低机 0°→90 = 32s (1.875/s)，方向机 84°→0° = 25s (3.36°/s)。
+    /// cost = 仰角上下时间 + 炮塔转动时间 = distance×2.56 + angleDelta×0.30（秒）。
+    /// 优先级 = Baseline 固化(2026-08-18 用户, 自 CBT 分支): 火炮(8) &gt; 3★(6,印钞)/高价值(5)
+    /// &gt; 1-2★(4) &gt; 普通(3); FDC 不在 dev 派发(派发层已过滤)。
     /// </summary>
-    public static void SortTargets(List<TargetInfo> targets, float currentAngle, CbtMonitor.CbtPhase cbtPhase = CbtMonitor.CbtPhase.None, bool baseline = false)
+    public static void SortTargets(List<TargetInfo> targets, float currentAngle)
     {
-        bool cbt = cbtPhase is CbtMonitor.CbtPhase.Wide or CbtMonitor.CbtPhase.Urgent or CbtMonitor.CbtPhase.Critical or CbtMonitor.CbtPhase.Opening or CbtMonitor.CbtPhase.Paused;
-        // Opening(倒计时未启动): 装填+飞行全不烧时间, 先打远目标白嫖更多(2026-08-15 用户指出
-        // 先打近浪费未开始时间)——同优先级下距离大优先。暂停(Paused)同此理(2026-08-18 修订):
-        // 暂停无时限(不开炮就挂冻结值), 第一次我方落地 = 解冻点, 暂停中弹不烧时间——
-        // 先派远(长 ToF)、双管对齐落地, 解冻点最晚且两发免费。
-        bool farFirst = cbtPhase is CbtMonitor.CbtPhase.Opening or CbtMonitor.CbtPhase.Paused;
         targets.Sort((a, b) =>
         {
-            int pa = cbt ? CbtPriority(a, cbtPhase, baseline) : a.Priority;
-            int pb = cbt ? CbtPriority(b, cbtPhase, baseline) : b.Priority;
+            int pa = BaselinePriority(a);
+            int pb = BaselinePriority(b);
             int pc = pb.CompareTo(pa);
             if (pc != 0) return pc;
-
-            if (farFirst) return b.Distance.CompareTo(a.Distance);   // 远优先
 
             float costA = a.Distance * 2.56f + AngleDelta(currentAngle, a.Angle) * 0.30f;
             float costB = b.Distance * 2.56f + AngleDelta(currentAngle, b.Angle) * 0.30f;
@@ -63,33 +56,16 @@ public static class TacticalDecider
         });
     }
 
-    /// <summary>CBT 双轨优先级重映射(§3.3/§3.4): 只换数字, 排序管道不动。
-    /// Baseline(2026-08-18 用户): 火炮(8, +30s 主源) > 3★(6,印钞) > 高价值(5) > 1-2★(4) > 普通(3)——
-    /// 无 FDC(0, 派发层已过滤); 软目标才进得了列表(装甲/地下 DRIL 打不穿, 派发层过滤)。
-    /// 宽裕/开局: 3★(7,印钞) > 火炮(6) > 高价值/弹药库(5) > 1-2★(4) > 装甲/工事(3) > 普通(2), FDC(0)=扣留。
-    /// 吃紧/危急: 火炮(8,+30s 硬通货) > FDC(7,暂停组合拳) > 3★(5) > 高价值(4) > 1-2★(3) > 装甲/工事(2) > 普通(1)。
-        /// 暂停(2026-08-16 用户修正, 2026-08-18 语义修订): 火炮(8, +30s 照常入账 + 其落地=解冻点,
-        /// 暂停内一次落地的主角) > FDC(7, 其落地=结此暂停+起新暂停) > 3★(6) >
-        /// 高价值(5) > 1-2★(4) > 装甲/工事(3) > 普通(2)。暂停中最低装药(ToF 不烧钟)。
-    /// 数值只用于排序, FDC 派发与否最终由 FcsModule.PickTarget 的 FdcDispatchable 把关。</summary>
-    private static int CbtPriority(TargetInfo t, CbtMonitor.CbtPhase phase, bool baseline = false)
+    /// <summary>Baseline 优先级映射(2026-08-18 用户, 自 CBT 分支固化):
+    /// 火炮(8, +30s 生存主源) > 3★(6,印钞)/高价值(5) > 1-2★(4) > 普通(3);
+    /// FDC(0) 不在 dev 派发(派发层已过滤); 装甲/地下不进列表(派发层过滤, DRIL 打不穿)。</summary>
+    private static int BaselinePriority(TargetInfo t)
     {
-        if (baseline)
-        {
-            if (t.IsFdc) return 0;
-            if (t.Priority == 5) return 8;                       // 火炮: +30s 生存主源
-            if (t.Priority == 4) return t.Stars >= 3 ? 6 : 5;    // 3★ 印钞 / 高价值
-            if (t.Priority == 3) return 4;                       // 1-2★
-            return 3;                                            // 普通
-        }
-        bool urgent = phase is CbtMonitor.CbtPhase.Urgent or CbtMonitor.CbtPhase.Critical;
-        bool paused = phase == CbtMonitor.CbtPhase.Paused;
-        if (t.IsFdc) return paused ? 7 : urgent ? 7 : 0;   // 暂停窗口 FDC 7(火炮 8 优先); 宽裕期垫底(扣留)
-        if (t.Priority == 5) return paused ? 8 : urgent ? 8 : 6;   // 火炮: 窗口内 +30s 顶倒计时最优先
-        if (t.Priority == 4)
-            return paused ? 6 : t.Stars >= 3 ? (urgent ? 5 : 7) : (urgent ? 4 : 5); // 3★ 印钞 vs 高价值/弹药库
-        if (t.Priority == 3) return paused ? 4 : t.Stars >= 1 ? (urgent ? 3 : 4) : (urgent ? 2 : 3); // 1-2★ / 装甲工事
-        return paused ? 2 : urgent ? 1 : 2;                  // 普通
+        if (t.IsFdc) return 0;
+        if (t.Priority == 5) return 8;                       // 火炮: +30s 生存主源
+        if (t.Priority == 4) return t.Stars >= 3 ? 6 : 5;    // 3★ 印钞 / 高价值
+        if (t.Priority == 3) return 4;                       // 1-2★
+        return 3;                                            // 普通
     }
 
     /// <summary>
