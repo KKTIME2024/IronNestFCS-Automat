@@ -224,15 +224,21 @@ public class FcsSceneInteractor {
         return go;
     }
     
-    public static IEnumerator WaitAndClick(LookAtTarget? button, float timeout = 20f) {
+    public static IEnumerator WaitAndClick(LookAtTarget? button, float timeout = 20f, Func<bool>? canceled = null) {
         if (button == null) {
             MelonLogger.Error("[FCS] WaitAndClick: button is null");
             yield break;
         }
         // 超时兜底(2026-08-15): 状态机停在中间(合栓后退壳/按钮不激活)时永久死等 → 卡死任务。
         // 超时后放弃点击, 由调用方(BulletInChamber 校验/看门狗)兜底重试。
+        // canceled(2026-08-19): 任务被取消/强杀 → 立即退出, 不占用按钮/采购台干扰同管后继任务
+        // (热重载局: 被强杀任务白等 20s 期间新任务已在装填, 互踩出 13° 仰角差空炮)。
         var deadline = Time.realtimeSinceStartup + timeout;
         while (button.isActive == false || button.nextAllowedClickTime > Time.realtimeSinceStartup) {
+            if (canceled != null && canceled()) {
+                MelonLogger.Msg($"[FCS] WaitAndClick: 任务已取消, 放弃等待按钮 {button.name}");
+                yield break;
+            }
             if (Time.realtimeSinceStartup > deadline) {
                 MelonLogger.Error($"[FCS] WaitAndClick: 按钮 {button.name} 等待激活超时 {timeout}s, 放弃点击");
                 yield break;

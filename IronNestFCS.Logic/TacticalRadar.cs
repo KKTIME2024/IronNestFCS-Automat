@@ -39,6 +39,7 @@ public class TacticalRadar
     private FireMission? _cachedFm;
     private PropertyInfo? _entitiesProp;
     private RectTransform? _coordinateRoot;   // 网格坐标→世界坐标的桥梁
+    private string _lastRadarSummary = "";   // 列表变化才刷日志(0.6s 节流下静态列表不再刷屏)
 
     public bool AutoPlaceMarkers { get; set; } = true;
     public List<TacticalDecider.TargetInfo> AliveHostiles { get; private set; } = new();
@@ -93,7 +94,12 @@ public class TacticalRadar
         var summary = string.Join(" | ", targets.Select(t =>
             $"({t.Priority}){t.EntityId} {(t.IsUnderground ? "UG" : "")}{(t.IsArmored ? "ARM" : "")}"));
         // allies 计数: 验证友军禁区检测是否工作(0 = 检测失败, 集群会误炸友军)
-        MelonLogger.Msg($"[Radar] {targets.Count} hostiles: {summary} allies:{AllyPositions.Count}");
+        // 列表变化才刷(2026-08-19 用户裁定): 静态列表 0.6s 一条刷了 100+ 行, 是日志最大噪声源。
+        var radarLine = $"[Radar] {targets.Count} hostiles: {summary} allies:{AllyPositions.Count}";
+        if (radarLine != _lastRadarSummary) {
+            MelonLogger.Msg(radarLine);
+            _lastRadarSummary = radarLine;
+        }
 
         if (AutoPlaceMarkers)
         {

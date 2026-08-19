@@ -859,6 +859,7 @@ public class FSC
                 }
                 else {
                     for (var attempt = 0; attempt < 4; attempt++) {
+                        if (task.Canceled) { task.progress = Progress.Canceled; yield break; }
                         yield return _purchaseDeck.BuyShell(task.bulletType, leftRight);
                         if (gunSys.HaveBulletInCylinder(task.bulletType)) break;   // 到货
                         var next = FallbackShell(task.bulletType);
@@ -946,14 +947,14 @@ public class FSC
                     else
                     {
                         MelonLogger.Msg($"[FCS] {leftRight} 膛内装药 {chamberCharges}包 不匹配 所需 {needCharges}包(dist={task.distance:F2}km, 拒收高包平弹道), 退壳重装");
-                        yield return gunSys.CleanState();   // 轮询确认弹出膛
+                        yield return gunSys.CleanState(() => task.Canceled);   // 轮询确认弹出膛
                     }
                 }
                 else
                 {
                     // 弹种不匹配 → 退壳重装(放弃这发已装好的弹)
                     MelonLogger.Msg($"[FCS] {leftRight} 膛内弹种 {gunSys.BulletInChamber()} ≠ 期望 {task.bulletType}, 退壳重装");
-                    yield return gunSys.CleanState();   // 轮询确认弹出膛
+                    yield return gunSys.CleanState(() => task.Canceled);   // 轮询确认弹出膛
                 }
             }
             else if (chamberState == GunSystem.ChamberState.ShellLoaded)
@@ -968,7 +969,7 @@ public class FSC
                 {
                     // 弹种不匹配 → 退壳重装
                     MelonLogger.Msg($"[FCS] {leftRight} 膛内残留 {gunSys.BulletInChamber()} ≠ 期望 {task.bulletType}, 退壳重装");
-                    yield return gunSys.CleanState();   // 轮询确认弹出膛
+                    yield return gunSys.CleanState(() => task.Canceled);   // 轮询确认弹出膛
                 }
             }
 
@@ -979,15 +980,16 @@ public class FSC
                 // 之间把自动装的弹误判成用户手动。此刻膛必空(状态接管已分流), 标 Auto 安全;
                 // 任务中断遗留的弹也保持 Auto(可复用), 不再被误标 Manual 堵死本管。
                 gunSys.MarkAutoLoaded();
-                yield return gunSys.LoadBullet(task.bulletType);
+                yield return gunSys.LoadBullet(task.bulletType, () => task.Canceled);
                 // LoadBullet 只是点推弹杆按钮——炮弹从挂架到炮膛需要机械时间，
                 // 不能立刻读 BulletInChamber()，否则会误判为装填失败。
                 {
-                    var chamberTimeout = 0;
-                    while (gunSys.BulletInChamber() == null && chamberTimeout < 30) {
-                        yield return new WaitForSeconds(0.5f);
-                        chamberTimeout++;
-                    }
+            var chamberTimeout = 0;
+            while (gunSys.BulletInChamber() == null && chamberTimeout < 30) {
+                if (task.Canceled) { task.progress = Progress.Canceled; yield break; }
+                yield return new WaitForSeconds(0.5f);
+                chamberTimeout++;
+            }
                     if (gunSys.BulletInChamber() != task.bulletType.ToString()) {
                         MelonLogger.Error($"[FCS] {leftRight} 炮管：装填后弹种不匹配，" +
                                           $"期望 {task.bulletType}，实际 {gunSys.BulletInChamber() ?? "null"}");
@@ -1048,7 +1050,18 @@ public class FSC
                     // 补购失败＝任务不可行（finally 兜底释放槽位/炮塔/登记）。
                     var powderPurchaseAttempts = 0;
                     while (gunSys.RemainingCharges() < powderCount) {
+                        if (task.Canceled) { task.progress = Progress.Canceled; viable = false; yield break; }
+                        var chargesBefore = gunSys.RemainingCharges();
                         yield return _purchaseDeck.BuyPowders();
+                        // 无效快速失败(2026-08-19 热重载局): 点数不足/采购无效 → 包数不加。
+                        // 空转 10 次要烧穿 120s 看门狗被强杀, 死协程残留互踩同管后继任务(13° 空炮)。
+                        // 本发快速失败, 等点数恢复后重派。
+                        if (gunSys.RemainingCharges() <= chargesBefore) {
+                            MelonLogger.Error($"[FCS] {leftRight} 装药采购无效(包数 {chargesBefore} 未增加, 点数不足或采购失败), 放弃本发");
+                            task.progress = Progress.Failed;
+                            viable = false;
+                            yield break;
+                        }
                         if (++powderPurchaseAttempts >= 10) {
                             MelonLogger.Error(
                                 $"[FCS] {leftRight} 炮管：购买装药 {powderPurchaseAttempts} 次后仍不足 " +
@@ -1063,7 +1076,7 @@ public class FSC
                     _deskLock.Release();
                 }
 
-                yield return gunSys.LoadPowder(powderCount);
+                yield return gunSys.LoadPowder(powderCount, () => task.Canceled);
                 task.progress = Progress.WaitLoading;
                 var loadTimeout = 0;
                 while (!gunSys.CanFire()) {
@@ -1090,6 +1103,7 @@ public class FSC
             // 玩家拉一次扳机 = 双弹齐射(如 AP+HE 打同一目标)。不同方位仍等锁串行——
             // 座圈只能一个方向, 齐射必一发偏; 放行后两管驱动同一方位值, 不抢舵。
             while (!turret.Acquired && !SameBearingAsOther()) {
+                if (task.Canceled) { task.progress = Progress.Canceled; yield break; }
                 TryComputeAimTargets(task, out _, out var elev);
                 gunSys.SetElevationTarget(elev);
                 yield return null;
@@ -1289,7 +1303,8 @@ public class FSC
                 float myArmDone = Time.time;
                 var otherTask = leftRight == LeftRight.Left ? RightTask : LeftTask;
                 if (_sceneInteractor.AutoFire || task.forceFire) {
-                    // 确认序列 ~3-4s 期间 aim 漂移(机构追着走); 复检对齐后再打(5s 内追上, 否则尽力打)。
+                    // 确认序列 ~3-4s 期间 aim 漂移(机构只趋向旧 setpoint, 不会自行追新值);
+                    // 复检窗口内主动驱动 aim(t) 追到对齐再打, 追不上 → 弃发(尽力打已删)。
                     // pass-through(非持锁)只复检自家仰角: 方位是持锁者的独占职责(它已收敛,
                     // 炮塔就在齐射线上), 对自家 aim 方位空等 5s 纯属浪费(0.1°×7km≈12m 恰好
                     // 是齐射容差)。
@@ -1299,8 +1314,28 @@ public class FSC
                         if (gunSys.ElevationError(re2) >= AimToleranceDeg) return false;
                         return Turret.AngleError(SalvoRefBearing(rb)) < AimToleranceDeg;
                     }
-                    while (!SalvoAligned() && !task.Canceled && Time.time - recheckStart < 5f) yield return null;
+                    // 复检=主动追赶(2026-08-19 用户实测: 动态目标完全追得上): arm 确认期 aim(t) 漂移,
+                    // 机构只会趋向旧 setpoint, 干等追不上 → 每帧驱动最新 aim(t) 直到收敛
+                    // (与收敛循环同法; 方位仅持锁者驱动, pass-through 只追自家仰角)。
+                    while (!SalvoAligned() && !task.Canceled && Time.time - recheckStart < 8f) {
+                        TryComputeAimTargets(task, out var cb, out var ce);
+                        if (turret.Acquired) Turret.SetDesiredRotation(cb);
+                        gunSys.SetElevationTarget(ce);
+                        yield return null;
+                    }
                     if (task.Canceled) { task.progress = Progress.Canceled; yield break; }
+                    // 追踪超时仍偏 → 放弃本发(尽力打已删, 2026-08-19 用户裁定): 偏大发必空炮
+                    // (13° 仰角差 = 数百米偏差) → 本发失败, 炮管稳定后重派。
+                    {
+                        TryComputeAimTargets(task, out var gb, out var ge);
+                        var elevGap = gunSys.ElevationError(ge);
+                        var azGap = Turret.AngleError(SalvoRefBearing(gb));
+                        if (elevGap > 2f || azGap > 1f) {
+                            MelonLogger.Error($"[FCS] {leftRight} 复检追踪 8s 未收敛: 目标az={gb:F2}° 目标elev={ge:F2}° | 炮塔az={Turret.CurrentBearing:F2}°({(Turret.Rotating ? "转动中" : "停")}) 炮塔elev={gunSys.ElevationActual:F2}° azErr={azGap:F2}° elevErr={elevGap:F2}°, 放弃本发防空炮");
+                            task.progress = Progress.Failed;
+                            yield break;
+                        }
+                    }
                     if (turret.Acquired) {
                         // 空膛护栏: 膛内无弹时拉扳机 = 空炮(无弹飞出但任务照常标记已击发
                         // → 目标永不死 → 反复重派发)。宁可任务失败重装再来, 不打空炮。
@@ -1312,7 +1347,9 @@ public class FSC
                         // 只有持锁者拉扳机——全局扳机击发所有已武装炮管, 同方位齐射由它一并带出
                         if (task.Canceled) { task.progress = Progress.Canceled; yield break; }   // 拉扳机前最后一道闸
                         TryComputeAimTargets(task, out var fb, out var fe);
-                        MelonLogger.Msg($"[FCS] {leftRight} 击发: {task.entityId} dist={task.distance:F2} 药={task.LoadedCharge} azErr={Turret.AngleError(fb):F2}° elevErr={gunSys.ElevationError(fe):F2}° 膛={gunSys.BulletInChamber()}");
+                        MelonLogger.Msg($"[FCS] {leftRight} 击发: {task.entityId} dist={task.distance:F2} 药={task.LoadedCharge} 弹={task.bulletType} " +
+                            $"目标az={fb:F2}° 目标elev={fe:F2}° | 炮塔az={Turret.CurrentBearing:F2}°({(Turret.Rotating ? "转动中" : "停")}) 炮塔elev={gunSys.ElevationActual:F2}° " +
+                            $"azErr={Turret.AngleError(fb):F2}° elevErr={gunSys.ElevationError(fe):F2}° 膛={gunSys.BulletInChamber()}");
                         TriggerConsole.Fire();
                         yield return gunSys.WaitFire();
                     } else {
@@ -1353,8 +1390,26 @@ public class FSC
                                 task.progress = Progress.Failed;
                                 yield break;
                             }
+                            // 兜底击发前主动追赶(与主复检同法): 自己已持锁, 方位/仰角都驱动到收敛
+                            var fbChaseStart = Time.time;
+                            while (Time.time - fbChaseStart < 5f) {
+                                TryComputeAimTargets(task, out var fb, out var fe);
+                                if (gunSys.ElevationError(fe) < AimToleranceDeg && Turret.AngleError(fb) < AimToleranceDeg) break;
+                                if (task.Canceled) { task.progress = Progress.Canceled; yield break; }
+                                Turret.SetDesiredRotation(fb);
+                                gunSys.SetElevationTarget(fe);
+                                yield return null;
+                            }
                             TryComputeAimTargets(task, out var fb2, out var fe2);
-                            MelonLogger.Msg($"[FCS] {leftRight} 兜底击发: {task.entityId} dist={task.distance:F2} 药={task.LoadedCharge} azErr={Turret.AngleError(fb2):F2}° elevErr={gunSys.ElevationError(fe2):F2}° 膛={gunSys.BulletInChamber()}");
+                            // 大偏护栏: 兜底击发同标准, 偏大发必空炮
+                            if (gunSys.ElevationError(fe2) > 2f || Turret.AngleError(fb2) > 1f) {
+                                MelonLogger.Error($"[FCS] {leftRight} 兜底击发追踪未收敛: 目标az={fb2:F2}° 目标elev={fe2:F2}° | 炮塔az={Turret.CurrentBearing:F2}°({(Turret.Rotating ? "转动中" : "停")}) 炮塔elev={gunSys.ElevationActual:F2}° azErr={Turret.AngleError(fb2):F2}° elevErr={gunSys.ElevationError(fe2):F2}°, 放弃本发防空炮");
+                                task.progress = Progress.Failed;
+                                yield break;
+                            }
+                            MelonLogger.Msg($"[FCS] {leftRight} 兜底击发: {task.entityId} dist={task.distance:F2} 药={task.LoadedCharge} 弹={task.bulletType} " +
+                                $"目标az={fb2:F2}° 目标elev={fe2:F2}° | 炮塔az={Turret.CurrentBearing:F2}°({(Turret.Rotating ? "转动中" : "停")}) 炮塔elev={gunSys.ElevationActual:F2}° " +
+                                $"azErr={Turret.AngleError(fb2):F2}° elevErr={gunSys.ElevationError(fe2):F2}° 膛={gunSys.BulletInChamber()}");
                             TriggerConsole.Fire();
                             yield return gunSys.WaitFire();
                         }
@@ -1370,6 +1425,13 @@ public class FSC
                         yield return null;
                     }
                     if (task.Canceled) { task.progress = Progress.Canceled; yield break; }
+                    // 玩家扳机时刻 = 击发时刻: 与 AutoFire 分支同格式记录, 空炮归因靠它
+                    {
+                        TryComputeAimTargets(task, out var mb, out var me);
+                        MelonLogger.Msg($"[FCS] {leftRight} 玩家扳机: {task.entityId} dist={task.distance:F2} 药={task.LoadedCharge} 弹={task.bulletType} " +
+                            $"目标az={mb:F2}° 目标elev={me:F2}° | 炮塔az={Turret.CurrentBearing:F2}°({(Turret.Rotating ? "转动中" : "停")}) 炮塔elev={gunSys.ElevationActual:F2}° " +
+                            $"azErr={Turret.AngleError(mb):F2}° elevErr={gunSys.ElevationError(me):F2}° 膛={gunSys.BulletInChamber()}");
+                    }
                 }
                 // 爆区覆盖: 落点 = 静态任务目标/集群质心, 移动任务提前点; 半径 = 该弹毁伤半径
                 Vector3 impactPos = task.position;

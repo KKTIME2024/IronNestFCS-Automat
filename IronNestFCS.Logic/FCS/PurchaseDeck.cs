@@ -2,6 +2,7 @@ using Il2Cpp;
 using MelonLoader;
 using UnityEngine;
 using System;
+using Object = UnityEngine.Object;
 using System.Collections;
 using static System.Enum;
 
@@ -14,6 +15,15 @@ public class PurchaseDeck {
     private LookAtTarget? _buyButton;
 
     public bool HasEmergencyMoveCard => _emergencyMoveCard != null;
+
+    /// <summary>征用点余额(MissionStatsTracker 全局单例, 剧情关/CBT 通用)。读取失败返回 -1(未知, 不干预)。</summary>
+    public static int GetPoints() {
+        try {
+            var t = UnityEngine.Object.FindObjectOfType<MissionStatsTracker>();
+            return t != null ? t.RequisitionPoints : -1;
+        }
+        catch { return -1; }
+    }
 
     public bool TryBind() {
         var requisitionConsole = GameObject.Find("Requisition Console").transform;
@@ -84,6 +94,15 @@ public class PurchaseDeck {
     /// <summary>通用采购: 拖卡入槽 → 等卡稳定 → (可选拨炮管拨盘) → 点购买按钮。
     /// 与原 BuyShell 时序一致(拨盘在点击前, 避免点击早于入槽导致采购无效)。</summary>
     private IEnumerator BuyCard(Transform card, Action? beforeClick) {
+        // 买不起快速失败(2026-08-19 热重载局): 征用点不足时购买点击无效, 原来要白等
+        // WaitAndClick 20s 超时 × 采购循环 ≤10 次 → 烧穿 120s 看门狗被强杀, 死协程残留拖垮同管。
+        int cost = -1;
+        try { cost = card.GetComponent<PunchcardRuntime>()?.CurrentDefinition.Cost ?? -1; } catch { }
+        var pts = GetPoints();
+        if (cost >= 0 && pts >= 0 && pts < cost) {
+            MelonLogger.Error($"[FCS] BuyCard: 征用点不足({pts}<{cost}), 放弃采购(不白等按钮超时), 由上层快速失败");
+            yield break;
+        }
         var target = new Vector3(6.4814f, -2.4675f, -22.0968f);
         card.position = target;
         card.GetComponent<DraggableItem>().MoveToSlot();

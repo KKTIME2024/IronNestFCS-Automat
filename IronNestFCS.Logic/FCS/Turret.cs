@@ -54,4 +54,19 @@ public class Turret {
         return d > 180f ? 360f - d : d;
     }
 
+    /// <summary>炮塔实际方位(0-360, 与 SetDesiredRotation 入参同坐标系)。诊断日志用。未绑定返回 -1。</summary>
+    public float CurrentBearing
+    {
+        get
+        {
+            if (_turret == null) return -1f;
+            var a = -_turret.CurrentAngle % 360f;   // CurrentAngle 是负号坐标系
+            if (a < 0f) a += 360f;
+            return Mathf.Round(a * 10f) / 10f;
+        }
+    }
+
+    /// <summary>炮塔是否在转动(诊断日志用)。</summary>
+    public bool Rotating => _turret != null && _turret.rotationVelocity != 0f;
+
 }

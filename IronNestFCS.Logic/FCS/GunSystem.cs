@@ -188,7 +188,7 @@ public class GunSystem {
     /// 幂等: 干净状态调用无副作用。调用方用 yield return 等待退壳完成。
     /// 方法/属性在 Il2Cpp stub 中缺失 → 反射调用(与 TacticalRadar 同风格)。
     /// </summary>
-    public IEnumerator CleanState() {
+    public IEnumerator CleanState(Func<bool>? canceled = null) {
         if (gunController == null) yield break;
         var gcType = gunController.GetType();
         // 1. 复位仰角到装填位(低位): 装填/退壳机构要求炮管在低位——合栓/击发后炮管可能
@@ -220,8 +220,10 @@ public class GunSystem {
                 InvokeReflected(rcType, reloadController, "RegressState");
                 InvokeReflected(rcType, reloadController, "ResetAnimators");
                 // 等回退动画推进(机构真实状态) + 仰角降到低位
-                for (var w = 0; w < 10 && (reloadController.working || gunController.elevationChangeVelocity != 0); w++)
+                for (var w = 0; w < 10 && (reloadController.working || gunController.elevationChangeVelocity != 0); w++) {
+                    if (canceled != null && canceled()) yield break;
                     yield return new WaitForSeconds(0.5f);
+                }
             }
             // 兜底: 回退到位后再强制复位(幂等)
             InvokeReflected(rcType, reloadController, "ForceResetStateToInitial");
@@ -246,6 +248,7 @@ public class GunSystem {
                     // 等动画完成, 弹出膛
                     var ejectTimeout = 0;
                     while (!IsChamberEmpty() && ejectTimeout < 10) {
+                        if (canceled != null && canceled()) yield break;
                         yield return new WaitForSeconds(0.5f);
                         ejectTimeout++;
                     }
@@ -258,8 +261,10 @@ public class GunSystem {
                     MelonLogger.Warning($"[FCS] GunSystem {_surfix}: 退壳第{attempt + 1}次后弹仍在膛, 回退状态机重试");
                     InvokeReflected(rcType!, reloadController, "RegressState");
                     InvokeReflected(rcType!, reloadController, "ResetAnimators");
-                    for (var w = 0; w < 10 && reloadController.working; w++)
+                    for (var w = 0; w < 10 && reloadController.working; w++) {
+                        if (canceled != null && canceled()) yield break;
                         yield return new WaitForSeconds(0.5f);
+                    }
                 }
             }
         }
@@ -345,7 +350,7 @@ public class GunSystem {
     /// （游戏有转动动画/物理）。返回 IEnumerator，调用方用 yield return 等待它跑完。
     /// 必须走协程而非 async：continuation 要留在主线程才能安全访问 IL2CPP 对象。
     /// </summary>
-    public IEnumerator LoadBullet(BulletType type) {
+    public IEnumerator LoadBullet(BulletType type, Func<bool>? canceled = null) {
         // 上一发的退壳/炮闩/复位机构可能仍在工作。先等待真实机构状态空闲，
         // 再开始下一轮弹仓和推弹操作，避免连续射击时过早点击后续控件。
         yield return WaitForReloadReady();
@@ -357,8 +362,12 @@ public class GunSystem {
                               $"No {type} available in cylinder, current bullets: {string.Join(", ", bullets)}");
             yield break;
         }
-        
+
         for (var i = 0; i < bullets.Count; ++i) {
+            if (canceled != null && canceled()) {
+                MelonLogger.Msg($"[FCS] GunSystem {_surfix}: 任务已取消, 中止转弹仓");
+                yield break;
+            }
             if (bullets[0] == type.ToString()) {
                 break;
             };
@@ -398,6 +407,10 @@ public class GunSystem {
                 var w = 0;
                 while (!ok && w < 20)
                 {
+                    if (canceled != null && canceled()) {
+                        MelonLogger.Msg($"[FCS] GunSystem {_surfix}: 任务已取消, 中止推弹等待");
+                        yield break;
+                    }
                     yield return new WaitForSeconds(0.5f);
                     try { ok = canLoad != null && (bool)canLoad.Invoke(reloadController, null)!; } catch { }
                     w++;
@@ -412,7 +425,8 @@ public class GunSystem {
                 yield break;
             }
         }
-        yield return FcsSceneInteractor.WaitAndClick(loadBulletButton!);
+        if (canceled != null && canceled()) yield break;
+        yield return FcsSceneInteractor.WaitAndClick(loadBulletButton!, 20f, canceled);
     }
 
     /// <summary>读装填状态机当前状态名(诊断用); 读取失败返回 "?"。</summary>
@@ -469,9 +483,10 @@ public class GunSystem {
         }
     }
 
-    public IEnumerator LoadPowder(int count) {
+    public IEnumerator LoadPowder(int count, Func<bool>? canceled = null) {
+        if (canceled != null && canceled()) yield break;
         yield return SelectPowder(count);
-        yield return FcsSceneInteractor.WaitAndClick(loadPowderButton!);
+        yield return FcsSceneInteractor.WaitAndClick(loadPowderButton!, 20f, canceled);
     }
 
     public bool HaveBulletInCylinder(BulletType type) {
@@ -525,6 +540,9 @@ public class GunSystem {
         if (gunController == null) return 0f;
         return Mathf.Abs(gunController.CurrentElevation - target);
     }
+
+    /// <summary>本管实际仰角(度)。诊断日志用。未绑定返回 -1。</summary>
+    public float ElevationActual => gunController != null ? gunController.CurrentElevation : -1f;
 
     /// <summary>是否已处于击发/待击发状态（玩家拉扳机后为 true）。手动等待判定用。</summary>
     public bool IsPendingReload() => gunController != null && gunController.pendingReload;
