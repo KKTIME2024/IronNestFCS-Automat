@@ -12,6 +12,7 @@ var tests = new (string Name, Action Run)[]
     ("translation transform shifts point", BattleSnapshotTests.TranslationTransformShiftsPoint),
     ("bearing north east west are canonical", BattleSnapshotTests.BearingNorthEastWestAreCanonical),
     ("distance uses world unit scale", BattleSnapshotTests.DistanceUsesWorldUnitScale),
+    ("invalid observation never carries death evidence", BattleSnapshotTests.InvalidObservationNeverCarriesDeathEvidence),
     ("stale plan is rejected before any group", PlanContractTests.StalePlanIsRejectedBeforeAnyGroup),
     ("same trigger is atomic and unsupported by legacy adapter", PlanContractTests.SameTriggerIsAtomicAndUnsupportedByLegacyAdapter),
     ("single shot gate authorizes only assigned barrel", PlanContractTests.SingleShotGateAuthorizesOnlyAssignedBarrel),

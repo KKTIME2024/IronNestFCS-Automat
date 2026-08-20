@@ -68,6 +68,14 @@ internal static class BattleSnapshotTests
         AssertEx.Equal(270f, geometry.Locate(new WorldPoint(-10, 0, 0)).BearingDeg);
     }
 
+    public static void InvalidObservationNeverCarriesDeathEvidence()
+    {
+        var snapshot = SnapshotBuilder.Invalid(9, "EnumeratorUnavailable");
+        AssertEx.False(snapshot.IsValid);
+        AssertEx.Equal(0, snapshot.Targets.Count);
+        AssertEx.Equal(NoPlanReason.ObservationInvalid, new BaselinePlanner().Plan(snapshot).NoPlanReason);
+    }
+
     public static void DistanceUsesWorldUnitScale()
     {
         var geometry = new MapGeometry(MapGeometry.IdentityTransform, WorldPoint.Zero);

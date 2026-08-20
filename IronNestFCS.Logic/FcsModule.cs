@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using Il2Cpp;
 using IronNestFCS.Abstractions;
 using IronNestFCS.Logic.FCS;
+using IronNestFCS.Logic.Planning;
 using MelonLoader;
 using UnityEngine;
 using UnityEngine.InputSystem;
@@ -15,6 +16,9 @@ public class FcsModule : IFcsModule
     private FcsWindow? window;
     private TacticalRadar? radar;
     private MapOverlay? overlay;
+    private ObservationAdapter? _observation;
+    private LegacyDecisionRecorder? _recorder;
+    private readonly PlannerRollout _rollout = new();
 
     private float lastScanTime;
     private float nextSweepTime;
@@ -71,6 +75,8 @@ public class FcsModule : IFcsModule
         window = new FcsWindow(fcs);
         radar = new TacticalRadar(fcs);
         overlay = new MapOverlay(fcs);
+        _observation = new ObservationAdapter(fcs, radar);
+        _recorder = new LegacyDecisionRecorder(fcs);
         fcs.EntityLocator = radar;   // 手动任务目标解析
         fcs.OnGunIdle += OnGunIdle;
         bool bound = fcs.TryBind();
@@ -90,9 +96,21 @@ public class FcsModule : IFcsModule
         // 转移完成后(倒计时暂停生效)由 EmergencyMoveRoutine 复位标志并触发一次补派。
         if (_emergencyMoveInProgress) return;
         AdjustAllValves(0f);
-        radar.Scan();
+
+        // 观测捕获(内部雷达扫描一次): 无效观测按 ObservationInvalid 处理——
+        // 不清队列、不规划、不派发, 保留上次可信数据, 绝不对账空存活集。
+        var snapshot = _observation!.Capture().Current;
+        var freeBarrels = (snapshot.LeftBarrel.HasActiveTask ? 0 : 1) + (snapshot.RightBarrel.HasActiveTask ? 0 : 1);
+        if (!snapshot.IsValid)
+        {
+            _rollout.RecordInvalid(snapshot.InvalidReason);
+            MelonLogger.Warning($"[FCS] scan invalid: {snapshot.InvalidReason} — keep last data, no dispatch this cycle");
+            MelonLogger.Msg(_recorder!.BuildGoldenLine(snapshot.Version, false, freeBarrels, snapshot.PendingManualTaskCount, snapshot.InvalidReason));
+            return;
+        }
 
         fcs.ClearPendingTasks();   // 只清自动任务, 手动任务保留
+        _recorder.Reset();
 
         // 逐空闲炮管派发（TryDispatch 按 Left→Right 取队首，入队顺序即分配顺序）。
         // 派发即登记(Registry.Commit 在 TryDispatch), 同帧双管去重由注册表覆盖,
@@ -114,7 +132,10 @@ public class FcsModule : IFcsModule
             if (task == null) task = CreateAutoTask(ti, nextTargetId, fcs.Cbt.ShouldUseMaxCharge(), fundMargin);
             nextTargetId++;
             fcs.EnqueueTask(task);
+            _recorder.Record(task, radar!.ObservedHostiles);
         }
+
+        MelonLogger.Msg(_recorder.BuildGoldenLine(snapshot.Version, true, freeBarrels, snapshot.PendingManualTaskCount, null));
     }
 
     /// <summary>单点自动任务(非集群路径): 现有选择/弹种/移动快照逻辑。BlastRadiusKm 供击发爆区注册。

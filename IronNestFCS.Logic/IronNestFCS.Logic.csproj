@@ -20,6 +20,10 @@
         <ProjectReference Include="..\IronNestFCS.Abstractions\IronNestFCS.Abstractions.csproj">
             <Private>false</Private>
         </ProjectReference>
+        <!-- 纯领域层: 运行时由 UserLibs 提供(与 Abstractions 同机制), 不复制 -->
+        <ProjectReference Include="..\IronNestFCS.Domain\IronNestFCS.Domain.csproj">
+            <Private>false</Private>
+        </ProjectReference>
     </ItemGroup>
 
     <!-- 全部 Private=false：运行时由进程提供，不复制 -->

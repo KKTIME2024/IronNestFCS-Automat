@@ -117,6 +117,15 @@ public class GunSystem {
         return gunController != null && gunController.CanFire;
     }
 
+    // ─── 只读机械观测(规划快照用): 只读不写, 绝不调用 CleanState/RegressState/退壳等恢复动作。
+    // 未绑定(热重载间隙/绑定失败)返回 null = 未知, 不得当成 false/0。 ───
+
+    public bool? ObserveReloadWorking() => reloadController == null ? null : reloadController.working;
+    public bool? ObserveBreechLocked() => gunController == null ? null : gunController.ExternalReloadLoweringLocked;
+    public bool? ObservePendingReload() => gunController == null ? null : gunController.pendingReload;
+    public bool? ObserveCanFire() => gunController == null ? null : gunController.CanFire;
+    public bool ObservationBound => gunController != null;
+
     /// <summary>膛内状态(每发任务开始前评估, 决定装填路径)。</summary>
     public enum ChamberState
     {

@@ -40,10 +40,19 @@ public class TacticalRadar
     private PropertyInfo? _entitiesProp;
     private RectTransform? _coordinateRoot;   // 网格坐标→世界坐标的桥梁
 
+    /// <summary>扫描结果: Valid=false 表示本轮扫描失败——保留上一次可信数据(AliveHostiles/AllyPositions/
+    /// 注册表都不动), 调用方必须按 ObservationInvalid 处理: 不对账、不规划、不派发。
+    /// 绝不允许把"枚举失败"当成"全部目标死亡"。</summary>
+    public readonly record struct RadarScanResult(bool Valid, string Failure, long Version);
+
     public bool AutoPlaceMarkers { get; set; } = true;
     public List<TacticalDecider.TargetInfo> AliveHostiles { get; private set; } = new();
+    /// <summary>最近一次成功扫描的枚举顺序目标(未排序)。规划路径基于它独立排序; 旧路径用 AliveHostiles。</summary>
+    public List<TacticalDecider.TargetInfo> ObservedHostiles { get; private set; } = new();
     /// <summary>存活友军世界坐标(集群落点友军禁区检查用), Scan 时刷新。</summary>
     public List<Vector3> AllyPositions { get; private set; } = new();
+    /// <summary>成功扫描计数(单调递增), 规划快照版本号。</summary>
+    public long Version { get; private set; }
     public int SweptCount => sweptIds.Count;
 
     public TacticalRadar(FSC fcs) => this.fcs = fcs;
@@ -64,25 +73,31 @@ public class TacticalRadar
     /// <summary>
     /// 从 FireMission.Entities Dictionary 扫描全部 MapEntity，
     /// 按 IsAlive && 敌对 过滤，按优先级+转角排序。
+    /// 事务性: 枚举/反射全部成功后才提交(对账+替换列表+版本号+标记);
+    /// 失败保留上一次可信数据, 返回具体失败原因。
     /// </summary>
-    public void Scan()
+    public RadarScanResult Scan()
     {
-        AliveHostiles.Clear();
-        AllyPositions.Clear();
         // 每轮扫描刷新地图面引用(紧急移动转移可能重建, 5s 一次 Find 开销可接受)
         _radarMapSurface = GameObject.Find("Draggable Surface")?.transform;
         var targets = new List<TacticalDecider.TargetInfo>();
+        var friendlies = new List<Vector3>();
         var aliveIds = new List<string>();
 
-        ForEachEntity((key, me) =>
+        if (!TryForEachEntity((key, me) =>
         {
             if (IsAlive(me)) aliveIds.Add(key);
             // 存活友军坐标 → 集群落点友军禁区检查(不能炸到友军)
             if (IsAlly(me) && IsAlive(me) && TryGetWorldPos(me, out var allyPos))
-                AllyPositions.Add(allyPos);
+                friendlies.Add(allyPos);
             var t = BuildTargetInfo(key, me);
             if (t != null) targets.Add(t.Value);
-        });
+        }, out var failure))
+        {
+            // 扫描失败: 保留上次可信数据, 不对账(空存活集≠死亡证据), 不动标记
+            MelonLogger.Warning($"[Radar] scan invalid: {failure} — keep last {AliveHostiles.Count} hostiles, no reconcile");
+            return new RadarScanResult(false, failure, Version);
+        }
 
         // 击杀确认: 死亡目标的登记立即解除(打中的目标下轮扫描恢复可拣)
         fcs.Registry.Reconcile(aliveIds);
@@ -93,8 +108,12 @@ public class TacticalRadar
         // 行为与非反炮兵关一致(该路径已验证稳定)。CBT 修复在 dev 分支进行, 稳定后恢复本行。
         fcs.Cbt.HasFdc = false;
 
+        // 枚举顺序副本(规划路径独立排序); 旧路径用排序结果
+        ObservedHostiles = new List<TacticalDecider.TargetInfo>(targets);
         TacticalDecider.SortTargets(targets, fcs.Turret.LastSetAngle, fcs.Cbt.SortPhase);
         AliveHostiles = targets;
+        AllyPositions = friendlies;
+        Version++;
 
         var summary = string.Join(" | ", targets.Select(t =>
             $"({t.Priority}){t.EntityId} {(t.IsUnderground ? "UG" : "")}{(t.IsArmored ? "ARM" : "")}"));
@@ -113,35 +132,50 @@ public class TacticalRadar
                     fcs.MapTable.ResetMarker(i);
             }
         }
+
+        return new RadarScanResult(true, "", Version);
     }
 
-    /// <summary>反射枚举 FireMission.Entities, 对每个 MapEntity 回调 (key, MapEntity)。</summary>
-    private void ForEachEntity(Action<string, object> action)
+    /// <summary>反射枚举 FireMission.Entities, 对每个 MapEntity 回调 (key, MapEntity)。
+    /// 失败时返回 false 并输出具体原因; 调用方不得把"空枚举"当成"全部死亡"。</summary>
+    private bool TryForEachEntity(Action<string, object> action, out string failure)
     {
-        var (fm, entities) = GetEntitiesDict();
-        if (entities == null) return;
-        var getEnum = entities.GetType().GetMethod("GetEnumerator", BindingFlags.Public | BindingFlags.Instance);
-        if (getEnum == null) return;
-        var enumerator = getEnum.Invoke(entities, null);
-        if (enumerator == null) return;
-        var enumType = enumerator.GetType();
-        var moveNext = enumType.GetMethod("MoveNext", BindingFlags.Public | BindingFlags.Instance);
-        var currentProp = enumType.GetProperty("Current", BindingFlags.Public | BindingFlags.Instance);
-        if (moveNext == null || currentProp == null) return;
-        while ((bool)moveNext.Invoke(enumerator, null)!)
+        if (!TryGetEntitiesDict(out var entities, out failure)) return false;
+        try
         {
-            var kvp = currentProp.GetValue(enumerator);
-            if (kvp == null) continue;
-            var kvpType = kvp.GetType();
-            var keyProp = kvpType.GetProperty("Key", BindingFlags.Public | BindingFlags.Instance);
-            var valueProp = kvpType.GetProperty("Value", BindingFlags.Public | BindingFlags.Instance);
-            if (keyProp == null || valueProp == null) continue;
-            var key = keyProp.GetValue(kvp)?.ToString() ?? "";
-            var me = valueProp.GetValue(kvp);
-            if (me == null) continue;
-            action(key, me);
+            var getEnum = entities!.GetType().GetMethod("GetEnumerator", BindingFlags.Public | BindingFlags.Instance);
+            if (getEnum == null) { failure = "EnumeratorMissing"; return false; }
+            var enumerator = getEnum.Invoke(entities, null);
+            if (enumerator == null) { failure = "EnumeratorMissing"; return false; }
+            var enumType = enumerator.GetType();
+            var moveNext = enumType.GetMethod("MoveNext", BindingFlags.Public | BindingFlags.Instance);
+            var currentProp = enumType.GetProperty("Current", BindingFlags.Public | BindingFlags.Instance);
+            if (moveNext == null || currentProp == null) { failure = "CurrentMissing"; return false; }
+            while ((bool)moveNext.Invoke(enumerator, null)!)
+            {
+                var kvp = currentProp.GetValue(enumerator);
+                if (kvp == null) continue;
+                var kvpType = kvp.GetType();
+                var keyProp = kvpType.GetProperty("Key", BindingFlags.Public | BindingFlags.Instance);
+                var valueProp = kvpType.GetProperty("Value", BindingFlags.Public | BindingFlags.Instance);
+                if (keyProp == null || valueProp == null) continue;
+                var key = keyProp.GetValue(kvp)?.ToString() ?? "";
+                var me = valueProp.GetValue(kvp);
+                if (me == null) continue;
+                action(key, me);
+            }
+            failure = "";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            failure = $"EntityReadException:{ex.GetType().Name}";
+            return false;
         }
     }
+
+    /// <summary>反射枚举 FireMission.Entities, 对每个 MapEntity 回调 (key, MapEntity)。失败静默(手动解析路径)。</summary>
+    private void ForEachEntity(Action<string, object> action) => TryForEachEntity(action, out _);
 
     private static bool IsAlive(object me)
     {
@@ -335,14 +369,14 @@ public class TacticalRadar
         return false;
     }
 
-    /// <summary>获取 FireMission.Entities Dictionary（带缓存，F9 重载自动刷新）</summary>
-    private (FireMission? fm, object? dict) GetEntitiesDict()
+    /// <summary>获取 FireMission.Entities Dictionary（带缓存，F9 重载自动刷新）。失败输出具体原因。</summary>
+    private bool TryGetEntitiesDict(out object? dict, out string failure)
     {
         try
         {
             if (_cachedFm != null && _entitiesProp != null)
             {
-                try { var test = _entitiesProp.GetValue(_cachedFm); if (test != null) return (_cachedFm, test); }
+                try { var test = _entitiesProp.GetValue(_cachedFm); if (test != null) { dict = test; failure = ""; return true; } }
                 catch { }
             }
 
@@ -351,23 +385,30 @@ public class TacticalRadar
             _coordinateRoot = null;
 
             var fmGo = GameObject.Find("Fire Mission Root");
-            if (fmGo == null) return (null, null);
-            _cachedFm = fmGo.GetComponent<FireMission>();
-            if (_cachedFm == null) return (null, null);
+            if (fmGo == null) { dict = null; failure = "FireMissionMissing"; return false; }
+            var fm = fmGo.GetComponent<FireMission>();
+            if (fm == null) { dict = null; failure = "FireMissionMissing"; return false; }
+            _cachedFm = fm;
 
-            _entitiesProp = _cachedFm.GetType().GetProperty("Entities", BindingFlags.Public | BindingFlags.Instance);
-            if (_entitiesProp == null) return (null, null);
+            var entitiesProp = fm.GetType().GetProperty("Entities", BindingFlags.Public | BindingFlags.Instance);
+            if (entitiesProp == null) { dict = null; failure = "EntitiesMissing"; return false; }
+            _entitiesProp = entitiesProp;
 
             // 缓存 coordinateRoot：网格坐标 → 世界坐标的桥梁
-            var crProp = _cachedFm.GetType().GetProperty("coordinateRoot", BindingFlags.Public | BindingFlags.Instance);
-            _coordinateRoot = crProp?.GetValue(_cachedFm) as RectTransform;
+            var crProp = fm.GetType().GetProperty("coordinateRoot", BindingFlags.Public | BindingFlags.Instance);
+            _coordinateRoot = crProp?.GetValue(fm) as RectTransform;
 
-            var dict = _entitiesProp.GetValue(_cachedFm);
-            return (_cachedFm, dict);
+            var d = entitiesProp.GetValue(fm);
+            if (d == null) { dict = null; failure = "EntitiesMissing"; return false; }
+            dict = d;
+            failure = "";
+            return true;
         }
         catch
         {
-            return (null, null);
+            dict = null;
+            failure = "FireMissionMissing";
+            return false;
         }
     }
 

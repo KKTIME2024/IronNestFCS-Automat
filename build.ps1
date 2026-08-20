@@ -99,6 +99,9 @@ try {
     Copy-ReleaseArtifact `
         -Source (Join-Path $repositoryRoot 'IronNestFCS.Abstractions\bin\Release\IronNestFCS.Abstractions.dll') `
         -Destination (Join-Path $fcsRoot 'UserLibs\IronNestFCS.Abstractions.dll')
+    Copy-ReleaseArtifact `
+        -Source (Join-Path $repositoryRoot 'artifacts\bin\IronNestFCS.Domain\Release\IronNestFCS.Domain.dll') `
+        -Destination (Join-Path $fcsRoot 'UserLibs\IronNestFCS.Domain.dll')
 
     New-Item -ItemType Directory -Path $releaseParent -Force | Out-Null
     if (Test-Path -LiteralPath $releaseRoot) {

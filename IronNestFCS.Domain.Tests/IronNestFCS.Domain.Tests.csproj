@@ -5,6 +5,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <ArtifactsDir Condition="'$(ArtifactsDir)' == ''">$(MSBuildThisFileDirectory)..\artifacts</ArtifactsDir>
+    <OutputPath>$(ArtifactsDir)\bin\$(MSBuildProjectName)\$(Configuration)\</OutputPath>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\IronNestFCS.Domain\IronNestFCS.Domain.csproj" />

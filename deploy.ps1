@@ -40,7 +40,8 @@ Assert-DirectoryExists -Path $packageRoot -Description 'Release package'
 $files = @(
     @{ Source = 'Mods\IronNestFCS.dll'; Destination = 'Mods\IronNestFCS.dll' },
     @{ Source = 'UserData\IronNestFCS\IronNestFCS.Logic.dll'; Destination = 'UserData\IronNestFCS\IronNestFCS.Logic.dll' },
-    @{ Source = 'UserLibs\IronNestFCS.Abstractions.dll'; Destination = 'UserLibs\IronNestFCS.Abstractions.dll' }
+    @{ Source = 'UserLibs\IronNestFCS.Abstractions.dll'; Destination = 'UserLibs\IronNestFCS.Abstractions.dll' },
+    @{ Source = 'UserLibs\IronNestFCS.Domain.dll'; Destination = 'UserLibs\IronNestFCS.Domain.dll' }
 )
 
 foreach ($file in $files) {
