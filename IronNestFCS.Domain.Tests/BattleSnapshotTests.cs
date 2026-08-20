@@ -80,7 +80,6 @@ internal static class BattleSnapshotTests
     {
         var geometry = new MapGeometry(MapGeometry.IdentityTransform, WorldPoint.Zero);
         var located = geometry.Locate(new WorldPoint(0, 1000, 0));
-        AssertEx.True(MathF.Abs(located.DistanceKm - 1000f * 3.8164f) < 0.001f);
+        AssertEx.True(MathF.Abs(located.DistanceKm - 1000f * MapGeometry.KmPerWorldUnit) < 0.001f);
     }
 }
-

@@ -4,7 +4,7 @@ param(
     [string]$PackageRoot
 )
 
-# 显式部署：把 Release/IronNestFCS 包内的三个 DLL 拷入游戏目录。
+# 显式部署：把 Release/IronNestFCS 包内的四个 DLL 拷入游戏目录。
 # 普通构建（build.ps1）绝不写游戏目录；本脚本必须由用户批准后单独运行。
 # 用法：.\deploy.ps1 [-GameDirectory <游戏根目录>] [-PackageRoot <包根目录，默认仓库根\Release\IronNestFCS>]
 

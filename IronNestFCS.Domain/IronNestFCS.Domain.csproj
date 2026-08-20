@@ -1,11 +1,19 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project>
+  <PropertyGroup>
+    <!-- 构建路径必须在 Sdk.props import 之前设置：NuGet import 在文件顶部就用
+         MSBuildProjectExtensionsPath，之后修改会触发 MSB3540。
+         普通构建只写仓库内 artifacts/；部署到游戏目录必须显式运行 deploy.ps1 -->
+    <ArtifactsDir Condition="'$(ArtifactsDir)' == ''">$(MSBuildThisFileDirectory)..\artifacts</ArtifactsDir>
+    <BaseIntermediateOutputPath>$(ArtifactsDir)\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
   <PropertyGroup>
     <TargetFramework>net6.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-    <ArtifactsDir Condition="'$(ArtifactsDir)' == ''">$(MSBuildThisFileDirectory)..\artifacts</ArtifactsDir>
     <OutputPath>$(ArtifactsDir)\bin\$(MSBuildProjectName)\$(Configuration)\</OutputPath>
   </PropertyGroup>
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
 </Project>

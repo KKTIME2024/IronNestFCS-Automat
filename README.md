@@ -50,17 +50,18 @@ A deep-fork of [svr2kos2](https://github.com/svr2kos2)'s FCS (tactical radar ins
 - **`Numpad 0`（或手柄 `Select`）一键切换全自动/手动**：全自动 = 雷达接管；手动 = 雷达完全休眠，切换时已在装填的任务自动打完（原子化）
 
 ### 开发体验
-- **F9 热重载**：修改 `IronNestFCS.Logic` 代码 → `dotnet build` → 切回游戏按 F9，无需重启
+- **F9 热重载**：修改 `IronNestFCS.Logic` 代码 → `dotnet build` → `./deploy.ps1` 同步到游戏目录 → 切回游戏按 F9，无需重启
 - **IMGUI 状态面板**：实时显示两管炮当前任务、目标参数与队列情况
 
 ### 架构
 
-四个程序集改为三个，核心为热重载服务的宿主/逻辑分离设计：
+核心为热重载服务的宿主/逻辑分离设计，另有纯领域层（无 Unity/IL2CPP 依赖）：
 
 | 项目 | 角色 | 说明 |
 | --- | --- | --- |
 | `IronNestFCS` | **宿主 Mod** | 稳定加载，永不重载。负责加载 Logic、监听 F9、转发生命周期 |
 | `IronNestFCS.Abstractions` | **契约** | 仅含 `IFcsModule` 接口，唯一安全跨 ALC 边界的类型 |
+| `IronNestFCS.Domain` | **纯领域层** | 不可变观测、交战计划、基线选择/集群/契约校验。无 Unity/IL2CPP 引用，运行时由 `UserLibs` 提供 |
 | `IronNestFCS.Logic` | **火控逻辑** | 所有火控代码：弹道解算、任务调度、炮塔操控、战术决策、UI。装入可回收 ALC，F9 卸载重载 |
 
 ### 文档
@@ -87,21 +88,27 @@ A deep-fork of [svr2kos2](https://github.com/svr2kos2)'s FCS (tactical radar ins
 <GameDir>你的路径\IRON NEST Heavy Turret Simulator</GameDir>
 ```
 
-构建：
+构建（只写仓库内 `artifacts/`，不碰游戏目录）：
 
 ```bash
 dotnet build IronNestFCS.sln -c Release
 ```
 
-输出位置：
+打包 + 部署到游戏目录（显式两步）：
 
-| 程序集 | 路径 | 说明 |
+```bash
+./build.ps1     # 生成 Release/IronNestFCS/ 发布包
+./deploy.ps1    # 把包内 DLL 拷入游戏目录
+```
+
+| 程序集 | 包内路径 | 说明 |
 | --- | --- | --- |
 | `IronNestFCS.dll` | `Mods/` | 宿主 Mod，MelonLoader 自动加载 |
 | `IronNestFCS.Logic.dll` | `UserData/IronNestFCS/` | 火控逻辑，宿主反射加载 |
+| `IronNestFCS.Domain.dll` | `UserLibs/` | 纯领域层，宿主与逻辑共用 |
 | `IronNestFCS.Abstractions.dll` | `UserLibs/` | 契约，宿主与逻辑共用 |
 
-> `IronNestFCS.Logic.csproj` 的 `OutputPath` 已指向 `$(GameDir)\UserData\IronNestFCS\`，构建即就位，改代码后进游戏按 F9 即生效。
+> 普通构建不写游戏目录。改代码后必须先 `./deploy.ps1` 再进游戏按 F9，否则 F9 加载的是旧 DLL。
 
 ### 使用
 
@@ -111,7 +118,7 @@ dotnet build IronNestFCS.sln -c Release
 4. 手动模式下拖动地图目标标记（T1~T4）到目标位置，按 **Numpad 1-4** 下达任务
 5. 左上角面板实时显示两管炮任务进度与队列
 
-**热重载开发**：修改 `IronNestFCS.Logic` 代码后重建项目，切回游戏按 F9 即可加载新逻辑。注意：不要在 Logic 中注册新的 IL2CPP 类型，协程必须登记以便卸载时停止。
+**热重载开发**：修改 `IronNestFCS.Logic` 代码后重建项目，运行 `./deploy.ps1` 同步到游戏目录，切回游戏按 F9 即可加载新逻辑。注意：不要在 Logic 中注册新的 IL2CPP 类型，协程必须登记以便卸载时停止。
 
 ### 贡献
 
@@ -166,17 +173,18 @@ A MelonLoader mod for *Iron Nest: Heavy Turret Simulator*. This is a deep-fork o
 - **`Numpad 0` (or gamepad `Select`) toggles auto/manual mode**: auto = radar takes over; manual = radar fully dormant, tasks already loading finish atomically
 
 ### Developer Experience
-- **F9 hot reload**: edit `IronNestFCS.Logic` → `dotnet build` → press F9 in-game. No restart needed
+- **F9 hot reload**: edit `IronNestFCS.Logic` → `dotnet build` → `./deploy.ps1` to sync the game directory → press F9 in-game. No restart needed
 - **IMGUI status panel**: live progress for both guns, target parameters, and queue depth
 
 ### Architecture
 
-Three projects, host/logic split to serve hot reload:
+Host/logic split to serve hot reload, plus a pure domain layer (no Unity/IL2CPP dependencies):
 
 | Project | Role | Notes |
 | --- | --- | --- |
 | `IronNestFCS` | **Host mod** | Loaded once, never reloaded. Loads Logic, listens for F9, forwards lifecycle callbacks |
 | `IronNestFCS.Abstractions` | **Contract** | Contains only the `IFcsModule` interface — the only type safe across ALC boundaries |
+| `IronNestFCS.Domain` | **Pure domain layer** | Immutable observations, engagement plans, baseline selection/clustering/contract validation. No Unity/IL2CPP references, provided at runtime from `UserLibs` |
 | `IronNestFCS.Logic` | **FCS logic** | All the fire control code: ballistics, scheduling, turret control, tactics, UI. Loaded in a collectible ALC for F9 reload |
 
 ### Docs
@@ -203,21 +211,27 @@ Change `GameDir` in both `.csproj` files to your game install path:
 <GameDir>your\path\Iron Nest Heavy Turret Simulator</GameDir>
 ```
 
-Build:
+Build (writes only to the repository's `artifacts/`, never to the game directory):
 
 ```bash
 dotnet build IronNestFCS.sln -c Release
 ```
 
-Output:
+Package + deploy into the game directory (two explicit steps):
 
-| Assembly | Path | Notes |
+```bash
+./build.ps1     # produces the Release/IronNestFCS/ package
+./deploy.ps1    # copies the package DLLs into the game directory
+```
+
+| Assembly | Package path | Notes |
 | --- | --- | --- |
 | `IronNestFCS.dll` | `Mods/` | Host mod, auto-loaded by MelonLoader |
 | `IronNestFCS.Logic.dll` | `UserData/IronNestFCS/` | FCS logic, reflection-loaded by the host |
+| `IronNestFCS.Domain.dll` | `UserLibs/` | Pure domain layer, shared by host and logic |
 | `IronNestFCS.Abstractions.dll` | `UserLibs/` | Contract shared by host and logic |
 
-> `IronNestFCS.Logic.csproj`'s `OutputPath` already points to `$(GameDir)\UserData\IronNestFCS\` — build output lands in place, so F9 picks it up instantly.
+> Ordinary builds do not write to the game directory. After changing code, run `./deploy.ps1` before pressing F9 in-game, or F9 will load the stale DLL.
 
 ### Usage
 
@@ -227,7 +241,7 @@ Output:
 4. In manual mode, drag map markers (T1~T4) onto targets and press **Numpad 1-4** to dispatch
 5. The top-left panel shows live progress for both guns and the queue
 
-**Dev hot reload**: edit `IronNestFCS.Logic`, rebuild, press F9 in-game. Don't register new IL2CPP types in Logic, and register coroutines so they stop on unload.
+**Dev hot reload**: edit `IronNestFCS.Logic`, rebuild, run `./deploy.ps1` to sync the game directory, then press F9 in-game. Don't register new IL2CPP types in Logic, and register coroutines so they stop on unload.
 
 ### Contributing
 

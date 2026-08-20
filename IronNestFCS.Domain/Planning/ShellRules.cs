@@ -4,8 +4,6 @@ namespace IronNestFCS.Domain.Planning;
 
 public static class ShellRules
 {
-    public const float KmPerWorldUnit = 3.8164f;
-
     public static ShellKind Choose(TargetSnapshot target)
     {
         var immune = target.ImmuneShells;

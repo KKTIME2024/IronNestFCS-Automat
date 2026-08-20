@@ -91,13 +91,13 @@ try {
     $fcsRoot = Join-Path $stagingRoot 'IronNestFCS'
 
     Copy-ReleaseArtifact `
-        -Source (Join-Path $repositoryRoot 'IronNestFCS\bin\Release\IronNestFCS.dll') `
+        -Source (Join-Path $repositoryRoot 'artifacts\bin\IronNestFCS\Release\IronNestFCS.dll') `
         -Destination (Join-Path $fcsRoot 'Mods\IronNestFCS.dll')
     Copy-ReleaseArtifact `
         -Source (Join-Path $repositoryRoot 'artifacts\bin\IronNestFCS.Logic\Release\IronNestFCS.Logic.dll') `
         -Destination (Join-Path $fcsRoot 'UserData\IronNestFCS\IronNestFCS.Logic.dll')
     Copy-ReleaseArtifact `
-        -Source (Join-Path $repositoryRoot 'IronNestFCS.Abstractions\bin\Release\IronNestFCS.Abstractions.dll') `
+        -Source (Join-Path $repositoryRoot 'artifacts\bin\IronNestFCS.Abstractions\Release\IronNestFCS.Abstractions.dll') `
         -Destination (Join-Path $fcsRoot 'UserLibs\IronNestFCS.Abstractions.dll')
     Copy-ReleaseArtifact `
         -Source (Join-Path $repositoryRoot 'artifacts\bin\IronNestFCS.Domain\Release\IronNestFCS.Domain.dll') `

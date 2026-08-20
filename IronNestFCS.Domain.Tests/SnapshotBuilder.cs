@@ -36,7 +36,7 @@ internal static class SnapshotBuilder
 
     private static WorldPoint PositionFromBearingDistance(float bearingDeg, float distanceKm)
     {
-        var d = distanceKm / ShellRules.KmPerWorldUnit;
+        var d = distanceKm / MapGeometry.KmPerWorldUnit;
         var rad = bearingDeg * MathF.PI / 180f;
         return new WorldPoint(MathF.Sin(rad) * d, MathF.Cos(rad) * d, 0f);
     }
@@ -117,4 +117,3 @@ internal static class SnapshotBuilder
         Relations: Array.Empty<GroupRelation>(),
         NoPlanReason: NoPlanReason.None);
 }
-

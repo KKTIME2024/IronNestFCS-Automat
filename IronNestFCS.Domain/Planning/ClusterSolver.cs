@@ -12,8 +12,8 @@ public static class ClusterSolver
         WorldPoint leader, IReadOnlyList<WorldPoint> candidates, float blastRadiusKm,
         IReadOnlyList<WorldPoint> friendlies, float friendlySafeKm)
     {
-        var r = blastRadiusKm / ShellRules.KmPerWorldUnit;
-        var rFriendly = friendlySafeKm / ShellRules.KmPerWorldUnit;
+        var r = blastRadiusKm / MapGeometry.KmPerWorldUnit;
+        var rFriendly = friendlySafeKm / MapGeometry.KmPerWorldUnit;
 
         var cand = new List<WorldPoint> { leader };
         foreach (var p in candidates)
@@ -44,7 +44,7 @@ public static class ClusterSolver
             if (HasFriendlyNear(center, rFriendly, friendlies)) continue;
             bestCount = count;
             bestImpact = center;
-            bestRadiusKm = radius * ShellRules.KmPerWorldUnit;
+            bestRadiusKm = radius * MapGeometry.KmPerWorldUnit;
         }
 
         return bestCount >= 2 && bestImpact is not null

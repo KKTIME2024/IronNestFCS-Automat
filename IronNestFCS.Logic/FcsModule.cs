@@ -200,6 +200,9 @@ public class FcsModule : IFcsModule
                 case NoPlanReason.ManualQueuePending:
                 case NoPlanReason.NoFreeBarrel:
                 case NoPlanReason.NoEligibleTarget:
+                    // 与旧路径一致: 无计划也要先清旧自动队列, 防陈旧快照任务稍后继续发射
+                    // (手动任务不受影响: ClearPendingTasks 只清 Auto)。
+                    fcs.ClearPendingTasks();
                     MelonLogger.Msg(LegacyDecisionRecorder.FormatGoldenLine(snapshot.Version, true, freeBarrels, snapshot.PendingManualTaskCount, null, PlanFingerprint.Format(plan)));
                     return;
                 case NoPlanReason.ObservationInvalid:
@@ -272,8 +275,10 @@ public class FcsModule : IFcsModule
             var task = fcs.TryBuildClusterTask(ti, nextTargetId);
             if (task == null) task = CreateAutoTask(ti, nextTargetId, fcs.Cbt.ShouldUseMaxCharge(), fundMargin);
             nextTargetId++;
-            fcs.EnqueueTask(task);
+            // 入队前记录: EnqueueTask 会立即派发并登记爆区(Registry.Commit),
+            // 之后推导静态集群成员会把刚登记的爆区成员过滤掉 → 影子假 mismatch。
             _recorder.Record(task, radar!.ObservedHostiles);
+            fcs.EnqueueTask(task);
         }
 
         MelonLogger.Msg(_recorder.BuildGoldenLine(snapshot.Version, true, freeBarrels, snapshot.PendingManualTaskCount, null));

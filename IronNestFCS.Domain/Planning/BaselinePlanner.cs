@@ -35,7 +35,7 @@ public sealed class BaselinePlanner
         });
 
         var reservedIds = new HashSet<string>(StringComparer.Ordinal);
-        var reservedPositions = new List<WorldPoint>();
+        var reservedPositions = new List<PositionReservation>();
         var groups = new List<FireGroup>();
         foreach (var target in ordered)
         {
@@ -59,27 +59,35 @@ public sealed class BaselinePlanner
 
     private const float MovingVelocityToleranceKmPerS = 0.002f;
 
-    private static bool IsPositionCovered(WorldPoint position, IReadOnlyList<WorldPoint> reservedPositions)
+    /// <summary>虚拟位置预约: 落点 + 覆盖半径²。模拟 TargetRegistry 的位置条目
+    /// (集群/爆区任务 Commit 即带毁伤半径, 屏蔽半径内任何后续候选, 不分类型/运动组)。</summary>
+    private readonly record struct PositionReservation(WorldPoint Impact, float RadiusSq);
+
+    private static bool IsPositionCovered(WorldPoint position, IReadOnlyList<PositionReservation> reservedPositions)
     {
         foreach (var reserved in reservedPositions)
-            if (WorldPoint.DistanceSquared(position, reserved) <= 0f) return true;
+            if (WorldPoint.DistanceSquared(position, reserved.Impact) <= reserved.RadiusSq) return true;
         return false;
     }
 
     private static void Reserve(
         ShotIntent shot, TargetSnapshot leader, BattleSnapshot snapshot,
-        HashSet<string> reservedIds, List<WorldPoint> reservedPositions)
+        HashSet<string> reservedIds, List<PositionReservation> reservedPositions)
     {
         reservedIds.Add(leader.EntityId);
         if (!string.IsNullOrEmpty(shot.TargetEntityId))
         {
-            reservedPositions.Add(shot.ImpactPoint);
+            // 单点任务: 旧注册表 Commit 只登记实体(位置条目在击发 MarkFiredBlast 才建),
+            // 同周期内不按位置屏蔽邻居 → 半径 0 保持等价。
+            reservedPositions.Add(new PositionReservation(shot.ImpactPoint, 0f));
             return;
         }
 
-        reservedPositions.Add(shot.ImpactPoint);
-        var blastWorld = shot.BlastRadiusKm / ShellRules.KmPerWorldUnit;
+        // 集群任务: 旧注册表 Commit 即建带毁伤半径的位置条目, 半径内任何目标(含装甲/地下/
+        // 异运动组)同周期内都被屏蔽 → 预约必须带半径, 否则等价性破坏。
+        var blastWorld = shot.BlastRadiusKm / MapGeometry.KmPerWorldUnit;
         var blastSq = blastWorld * blastWorld;
+        reservedPositions.Add(new PositionReservation(shot.ImpactPoint, blastSq));
         foreach (var member in snapshot.Targets)
         {
             if (member.IsArmored || member.IsUnderground) continue;
@@ -91,11 +99,11 @@ public sealed class BaselinePlanner
     }
 
     private static float VelocityDiffKmPerS(TargetSnapshot a, TargetSnapshot b) =>
-        WorldPoint.Distance(a.VelocityWorldPerSecond, b.VelocityWorldPerSecond) * ShellRules.KmPerWorldUnit;
+        WorldPoint.Distance(a.VelocityWorldPerSecond, b.VelocityWorldPerSecond) * MapGeometry.KmPerWorldUnit;
 
     private static ShotIntent CreateShot(
         BattleSnapshot snapshot, TargetSnapshot target,
-        HashSet<string> reservedIds, List<WorldPoint> reservedPositions)
+        HashSet<string> reservedIds, List<PositionReservation> reservedPositions)
     {
         var cluster = TryCluster(snapshot, target, reservedIds, reservedPositions);
         if (cluster is not null)
@@ -129,7 +137,7 @@ public sealed class BaselinePlanner
 
     private static ChosenCluster? TryCluster(
         BattleSnapshot snapshot, TargetSnapshot leader,
-        HashSet<string> reservedIds, List<WorldPoint> reservedPositions)
+        HashSet<string> reservedIds, List<PositionReservation> reservedPositions)
     {
         if (leader.IsArmored || leader.IsUnderground) return null;
 
@@ -170,7 +178,7 @@ public sealed class BaselinePlanner
         BattleSnapshot snapshot, TargetSnapshot leader, ChosenCluster cluster)
     {
         var located = snapshot.Geometry.Locate(cluster.Impact);
-        var blastWorld = ShellRules.BlastRadiusKm(cluster.Shell) / ShellRules.KmPerWorldUnit;
+        var blastWorld = ShellRules.BlastRadiusKm(cluster.Shell) / MapGeometry.KmPerWorldUnit;
         var blastSq = blastWorld * blastWorld;
         var members = new List<string>();
         foreach (var other in snapshot.Targets)

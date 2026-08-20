@@ -86,12 +86,18 @@ public class TacticalRadar
 
         if (!TryForEachEntity((key, me) =>
         {
-            if (IsAlive(me)) aliveIds.Add(key);
+            // 事务性: 必需字段缺失/null/类型不符 → 整轮扫描失败(保留上次可信数据, 绝不对账)。
+            // IsAlive 缺失会把实体漏出存活集 → Reconcile 把"读取失败"误判为"全部死亡"并释放登记;
+            // Role 缺失会把敌对实体漏出目标集、友军漏出集群禁区集。
+            if (!TryIsAlive(me, out var alive)) return $"IsAliveMissing:{key}";
+            if (!TryGetRole(me, out var role)) return $"RoleMissing:{key}";
+            if (alive) aliveIds.Add(key);
             // 存活友军坐标 → 集群落点友军禁区检查(不能炸到友军)
-            if (IsAlly(me) && IsAlive(me) && TryGetWorldPos(me, out var allyPos))
+            if (IsAllyRole(role) && alive && TryGetWorldPos(me, out var allyPos))
                 friendlies.Add(allyPos);
-            var t = BuildTargetInfo(key, me);
+            var t = BuildTargetInfo(key, me, role, alive);
             if (t != null) targets.Add(t.Value);
+            return null;
         }, out var failure))
         {
             // 扫描失败: 保留上次可信数据, 不对账(空存活集≠死亡证据), 不动标记
@@ -137,8 +143,9 @@ public class TacticalRadar
     }
 
     /// <summary>反射枚举 FireMission.Entities, 对每个 MapEntity 回调 (key, MapEntity)。
-    /// 失败时返回 false 并输出具体原因; 调用方不得把"空枚举"当成"全部死亡"。</summary>
-    private bool TryForEachEntity(Action<string, object> action, out string failure)
+    /// 回调返回非 null 失败原因即中止; 失败时返回 false 并输出具体原因。
+    /// 调用方不得把"空枚举"或"部分枚举"当成"全部死亡"。</summary>
+    private bool TryForEachEntity(Func<string, object, string?> action, out string failure)
     {
         if (!TryGetEntitiesDict(out var entities, out failure)) return false;
         try
@@ -154,15 +161,17 @@ public class TacticalRadar
             while ((bool)moveNext.Invoke(enumerator, null)!)
             {
                 var kvp = currentProp.GetValue(enumerator);
-                if (kvp == null) continue;
+                if (kvp == null) { failure = "EnumeratorNullKvp"; return false; }
                 var kvpType = kvp.GetType();
                 var keyProp = kvpType.GetProperty("Key", BindingFlags.Public | BindingFlags.Instance);
                 var valueProp = kvpType.GetProperty("Value", BindingFlags.Public | BindingFlags.Instance);
-                if (keyProp == null || valueProp == null) continue;
+                // KVP 形状不符 = 枚举不可信(漏掉的实体不在存活集 → 会被 Reconcile 误判死亡)
+                if (keyProp == null || valueProp == null) { failure = "KvpShapeMissing"; return false; }
                 var key = keyProp.GetValue(kvp)?.ToString() ?? "";
                 var me = valueProp.GetValue(kvp);
-                if (me == null) continue;
-                action(key, me);
+                if (me == null) continue;   // 空槽位: 无实体即无登记, 不构成死亡证据
+                var fieldFailure = action(key, me);
+                if (fieldFailure != null) { failure = fieldFailure; return false; }
             }
             failure = "";
             return true;
@@ -175,33 +184,42 @@ public class TacticalRadar
     }
 
     /// <summary>反射枚举 FireMission.Entities, 对每个 MapEntity 回调 (key, MapEntity)。失败静默(手动解析路径)。</summary>
-    private void ForEachEntity(Action<string, object> action) => TryForEachEntity(action, out _);
+    private void ForEachEntity(Action<string, object> action) =>
+        TryForEachEntity((key, me) => { action(key, me); return null; }, out _);
 
-    private static bool IsAlive(object me)
+    /// <summary>严格读取 IsAlive(扫描路径): 属性缺失/null/非 bool → 失败, 不得当作 false。</summary>
+    private static bool TryIsAlive(object me, out bool alive)
     {
         var aliveProp = me.GetType().GetProperty("IsAlive", BindingFlags.Public | BindingFlags.Instance);
-        return aliveProp?.GetValue(me) is bool b && b;
+        if (aliveProp?.GetValue(me) is bool b) { alive = b; return true; }
+        alive = false;
+        return false;
     }
 
-    private static int GetRole(object me)
+    /// <summary>严格读取 Role(扫描路径): 属性缺失/null/非 int/非枚举 → 失败, 不得当作 -1。</summary>
+    private static bool TryGetRole(object me, out int role)
     {
         var roleProp = me.GetType().GetProperty("Role", BindingFlags.Public | BindingFlags.Instance);
         var roleVal = roleProp?.GetValue(me);
-        if (roleVal is int ri) return ri;
-        if (roleVal is Enum e) return Convert.ToInt32(e);
-        return -1;
+        if (roleVal is int ri) { role = ri; return true; }
+        if (roleVal is Enum e) { role = Convert.ToInt32(e); return true; }
+        role = -1;
+        return false;
     }
+
+    /// <summary>宽松读取(仅手动解析路径, 不涉及 Reconcile)。</summary>
+    private static bool IsAlive(object me) => TryIsAlive(me, out var b) && b;
+
+    /// <summary>宽松读取(仅手动解析路径, 不涉及 Reconcile)。</summary>
+    private static int GetRole(object me) => TryGetRole(me, out var r) ? r : -1;
 
     /// <summary>敌对 = 带 Enemy/Target 位且非 Reference(Ally-only 已天然排除)</summary>
     private static bool IsHostileRole(int role) =>
         role >= 0 && (role & (RoleEnemy | RoleTarget)) != 0 && (role & RoleReference) == 0;
 
     /// <summary>友军 = 带 Ally 位且非 Reference</summary>
-    private static bool IsAlly(object me)
-    {
-        int role = GetRole(me);
-        return role >= 0 && (role & RoleAlly) != 0 && (role & RoleReference) == 0;
-    }
+    private static bool IsAllyRole(int role) =>
+        role >= 0 && (role & RoleAlly) != 0 && (role & RoleReference) == 0;
 
     /// <summary>世界坐标: 优先 Location.transform.position, 兜底 coordinateRoot.TransformPoint</summary>
     private bool TryGetWorldPos(object me, out Vector3 worldPos)
@@ -225,11 +243,11 @@ public class TacticalRadar
         return false;
     }
 
-    /// <summary>单个实体的 TargetInfo 构建: IsAlive && 敌对 过滤, 无世界坐标返回 null。</summary>
-    private TacticalDecider.TargetInfo? BuildTargetInfo(string key, object me)
+    /// <summary>单个实体的 TargetInfo 构建: 存活 && 敌对 过滤, 无世界坐标返回 null。
+    /// alive/role 由扫描回调严格读取后传入(缺失已在扫描层判失败)。</summary>
+    private TacticalDecider.TargetInfo? BuildTargetInfo(string key, object me, int role, bool alive)
     {
-        if (!IsAlive(me)) return null;
-        int role = GetRole(me);
+        if (!alive) return null;
         if (!IsHostileRole(role)) return null;
 
         var meType = me.GetType();
