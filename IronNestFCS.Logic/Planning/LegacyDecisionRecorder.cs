@@ -1,3 +1,4 @@
+using System.Linq;
 using IronNestFCS.Domain.Diagnostics;
 using IronNestFCS.Domain.Geometry;
 using IronNestFCS.Domain.Observation;
@@ -12,7 +13,7 @@ namespace IronNestFCS.Logic.Planning;
 public sealed class LegacyDecisionRecorder
 {
     private readonly FSC _fcs;
-    private readonly List<ShotIntent> _decisions = new();
+    private readonly List<(ArtilleryTask Task, ShotIntent Intent)> _decisions = new();
 
     public LegacyDecisionRecorder(FSC fcs) => _fcs = fcs;
 
@@ -21,15 +22,19 @@ public sealed class LegacyDecisionRecorder
     public int Count => _decisions.Count;
 
     public void Record(ArtilleryTask task, IReadOnlyList<TacticalDecider.TargetInfo> scanned)
-        => _decisions.Add(ToIntent(task, scanned));
+        => _decisions.Add((task, ToIntent(task, scanned)));
+
+    /// <summary>本周期真正占位开火的决策(对象身份 == 当前炮槽任务)。
+    /// 留在队列里的任务(如手动 FIFO 压队)不算本周期开火决策。</summary>
+    public ShotIntent[] DispatchedDecisions(ArtilleryTask? left, ArtilleryTask? right) =>
+        _decisions.Where(d => ReferenceEquals(d.Task, left) || ReferenceEquals(d.Task, right))
+                  .Select(d => d.Intent).ToArray();
 
     /// <summary>每扫描一条不变式结构化行(不含 IL2CPP 对象 ToString 原文)。</summary>
     public string BuildGoldenLine(long scanVersion, bool valid, int freeBarrels, int manualCount, string? failure)
     {
-        var groups = _decisions
-            .Select(s => new FireGroup($"legacy-{s.ShotId}", TriggerMode.Independent, new[] { s }, false))
-            .ToArray();
-        var plan = new EngagementPlan(scanVersion, PlanSource.Autonomous, groups, Array.Empty<GroupRelation>(), NoPlanReason.None);
+        var plan = ShadowPlanComparer.BuildPlan(scanVersion, NoPlanReason.None,
+            _decisions.Select(d => d.Intent).ToArray());
         return $"[PLAN-GOLDEN] scan={scanVersion}|valid={(valid ? 1 : 0)}|free={freeBarrels}|manual={manualCount}|legacy={PlanFingerprint.Format(plan)}|reason={failure ?? "none"}";
     }
 

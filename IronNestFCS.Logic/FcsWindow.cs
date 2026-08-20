@@ -1,13 +1,15 @@
 using System.Linq;
 using IronNestFCS.Logic.FCS;
+using IronNestFCS.Logic.Planning;
 using MelonLoader;
 using UnityEngine;
 
 namespace IronNestFCS.Logic;
 
-public class FcsWindow
+internal class FcsWindow
 {
     private readonly FSC fcs;
+    private readonly PlannerRollout rollout;
 
     private bool showWindow = true;
     private Rect panelRect = new(20, 20, 290, 140);
@@ -24,7 +26,11 @@ public class FcsWindow
 
     public bool AutoSweepEnabled { get; set; }
 
-    public FcsWindow(FSC fcs) => this.fcs = fcs;
+    public FcsWindow(FSC fcs, PlannerRollout rollout)
+    {
+        this.fcs = fcs;
+        this.rollout = rollout;
+    }
 
     public void OnGui()
     {
@@ -39,6 +45,8 @@ public class FcsWindow
         if (fcs.RightTask != null) extra += lineH * 3;
         else extra += lineH;
         extra += lineH * (fcs.PendingCount + 1);
+        extra += lineH;   // 规划器 rollout 行
+        if (rollout.LastMismatchDetail != null || rollout.LastInvalidReason != null) extra += lineH;
         extra += 12f;
 
         panelRect.height = 140f + extra;
@@ -95,6 +103,21 @@ public class FcsWindow
         GUI.Label(new Rect(x, y, w, h), $"Queue: {fcs.PendingCount}");
         GUI.color = oldColor;
         y += lineH;
+
+        // 规划器 rollout 状态(只读展示, 无控制)
+        var plannerReason = rollout.LastMismatchDetail ?? rollout.LastInvalidReason;
+        GUI.color = rollout.ShadowMismatches > 0 ? ClrWarning : ClrGreen;
+        GUI.Label(new Rect(x, y, w, h),
+            $"Planner: {rollout.Authority.ToString().ToUpperInvariant()}+SHADOW  match {rollout.ShadowMatches} / mismatch {rollout.ShadowMismatches}");
+        GUI.color = oldColor;
+        y += lineH;
+        if (plannerReason != null)
+        {
+            GUI.color = ClrLabel;
+            GUI.Label(new Rect(x, y, w, h), $"  last: {plannerReason}");
+            GUI.color = oldColor;
+            y += lineH;
+        }
 
         foreach (var item in fcs.QueueCan)
         {

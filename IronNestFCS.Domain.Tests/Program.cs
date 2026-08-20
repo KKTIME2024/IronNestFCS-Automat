@@ -37,7 +37,21 @@ var tests = new (string Name, Action Run)[]
     ("velocity difference above threshold splits cluster", ClusterPlannerTests.VelocityDifferenceAboveThresholdSplitsCluster),
     ("first cluster blast reserves covered static member", ClusterPlannerTests.FirstClusterBlastReservesCoveredStaticMember),
     ("moving cluster records matching covered entities", ClusterPlannerTests.MovingClusterRecordsMatchingCoveredEntities),
-    ("static cluster records unreserved diagnostic members", ClusterPlannerTests.StaticClusterRecordsUnreservedDiagnosticMembers)
+    ("static cluster records unreserved diagnostic members", ClusterPlannerTests.StaticClusterRecordsUnreservedDiagnosticMembers),
+    ("identical plans compare clean", FingerprintCompareTests.IdenticalPlansCompareClean),
+    ("target difference is reported", FingerprintCompareTests.TargetDifferenceIsReported),
+    ("group order difference is reported", FingerprintCompareTests.GroupOrderDifferenceIsReported),
+    ("trigger mode difference is reported", FingerprintCompareTests.TriggerModeDifferenceIsReported),
+    ("cluster vs single difference is reported", FingerprintCompareTests.ClusterVsSingleDifferenceIsReported),
+    ("members order does not matter", FingerprintCompareTests.MembersOrderDoesNotMatter),
+    ("impact within tolerance is clean", FingerprintCompareTests.ImpactWithinToleranceIsClean),
+    ("impact difference is reported", FingerprintCompareTests.ImpactDifferenceIsReported),
+    ("shell difference is reported", FingerprintCompareTests.ShellDifferenceIsReported),
+    ("charge policy difference is reported", FingerprintCompareTests.ChargePolicyDifferenceIsReported),
+    ("motion snapshot differences are reported", FingerprintCompareTests.MotionSnapshotDifferencesAreReported),
+    ("all differences are reported", FingerprintCompareTests.AllDifferencesAreReported),
+    ("group count mismatch is reported", FingerprintCompareTests.GroupCountMismatchIsReported),
+    ("no plan reason difference is reported", FingerprintCompareTests.NoPlanReasonDifferenceIsReported)
 };
 
 var failed = 0;

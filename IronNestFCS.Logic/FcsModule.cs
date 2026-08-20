@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using Il2Cpp;
 using IronNestFCS.Abstractions;
+using IronNestFCS.Domain.Planning;
 using IronNestFCS.Logic.FCS;
 using IronNestFCS.Logic.Planning;
 using MelonLoader;
@@ -19,6 +20,7 @@ public class FcsModule : IFcsModule
     private ObservationAdapter? _observation;
     private LegacyDecisionRecorder? _recorder;
     private readonly PlannerRollout _rollout = new();
+    private readonly BaselinePlanner _planner = new();
 
     private float lastScanTime;
     private float nextSweepTime;
@@ -72,7 +74,7 @@ public class FcsModule : IFcsModule
 
     public bool Initialize()
     {
-        window = new FcsWindow(fcs);
+        window = new FcsWindow(fcs, _rollout);
         radar = new TacticalRadar(fcs);
         overlay = new MapOverlay(fcs);
         _observation = new ObservationAdapter(fcs, radar);
@@ -109,6 +111,14 @@ public class FcsModule : IFcsModule
             return;
         }
 
+        // 影子(只读): 在旧路径副作用前跑新规划器。
+        // 领域程序集无 FSC/TargetRegistry 引用, 结构上改不了调度器;
+        // 守卫再校验队列长度 + 双炮槽对象身份, 违例强制 legacy-only。
+        _rollout.BeginShadowGuard(fcs.QueueCan.Count, fcs.LeftTask, fcs.RightTask);
+        var shadowPlan = _planner.Plan(snapshot);
+        if (!_rollout.AssertShadowReadOnly(fcs.QueueCan.Count, fcs.LeftTask, fcs.RightTask))
+            MelonLogger.Error("[FCS] shadow violation after BaselinePlanner.Plan — forcing legacy-only");
+
         fcs.ClearPendingTasks();   // 只清自动任务, 手动任务保留
         _recorder.Reset();
 
@@ -136,6 +146,14 @@ public class FcsModule : IFcsModule
         }
 
         MelonLogger.Msg(_recorder.BuildGoldenLine(snapshot.Version, true, freeBarrels, snapshot.PendingManualTaskCount, null));
+
+        // 影子比较(只读): 循环产出决策记录后才比较; 只比本周期真正占位开火的决策。
+        _rollout.BeginShadowGuard(fcs.QueueCan.Count, fcs.LeftTask, fcs.RightTask);
+        var comparison = ShadowPlanComparer.Compare(snapshot, _recorder.DispatchedDecisions(fcs.LeftTask, fcs.RightTask), shadowPlan);
+        if (!_rollout.AssertShadowReadOnly(fcs.QueueCan.Count, fcs.LeftTask, fcs.RightTask))
+            MelonLogger.Error("[FCS] shadow violation after ShadowPlanComparer.Compare — forcing legacy-only");
+        _rollout.RecordShadow(comparison.Match, comparison.Diffs.Length > 0 ? string.Join(";", comparison.Diffs) : null);
+        MelonLogger.Msg(comparison.ToLine(snapshot.Version));
     }
 
     /// <summary>单点自动任务(非集群路径): 现有选择/弹种/移动快照逻辑。BlastRadiusKm 供击发爆区注册。

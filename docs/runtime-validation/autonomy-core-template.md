@@ -1,0 +1,12 @@
+# Autonomy Core Runtime Validation
+- Commit:
+- DLL SHA-256:
+- Scenario / target composition:
+- Start and end local time:
+- Inputs: auto toggle, T1–T4 actions, hot reload action, invalid-scan action
+- Complete automatic engagement cycle observed:
+- PLAN-SHADOW matches:
+- PLAN-SHADOW mismatches:
+- Lock leak / stuck task / unintended fire:
+- Relevant log filename and line timestamps:
+- Result: PASS or FAIL
