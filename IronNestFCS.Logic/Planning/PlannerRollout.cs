@@ -16,6 +16,10 @@ internal sealed class PlannerRollout
 
     public void SetAuthority(PlannerAuthority authority) => Authority = authority;
 
+    /// <summary>Ctrl+Numpad7: Legacy ↔ Baseline 切换。模块初始化/热重载后默认 Legacy。</summary>
+    public void ToggleAuthority() =>
+        Authority = Authority == PlannerAuthority.Legacy ? PlannerAuthority.Baseline : PlannerAuthority.Legacy;
+
     public void RecordShadow(bool match, string? diff)
     {
         if (match)

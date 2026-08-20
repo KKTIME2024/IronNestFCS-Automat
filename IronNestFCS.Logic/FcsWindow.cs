@@ -46,7 +46,7 @@ internal class FcsWindow
         else extra += lineH;
         extra += lineH * (fcs.PendingCount + 1);
         extra += lineH;   // 规划器 rollout 行
-        if (rollout.LastMismatchDetail != null || rollout.LastInvalidReason != null) extra += lineH;
+        if (rollout.LastMismatchDetail != null || rollout.LastInvalidReason != null || rollout.LastFallbackReason != null) extra += lineH;
         extra += 12f;
 
         panelRect.height = 140f + extra;
@@ -105,10 +105,12 @@ internal class FcsWindow
         y += lineH;
 
         // 规划器 rollout 状态(只读展示, 无控制)
-        var plannerReason = rollout.LastMismatchDetail ?? rollout.LastInvalidReason;
-        GUI.color = rollout.ShadowMismatches > 0 ? ClrWarning : ClrGreen;
-        GUI.Label(new Rect(x, y, w, h),
-            $"Planner: {rollout.Authority.ToString().ToUpperInvariant()}+SHADOW  match {rollout.ShadowMatches} / mismatch {rollout.ShadowMismatches}");
+        var plannerReason = rollout.LastMismatchDetail ?? rollout.LastInvalidReason ?? rollout.LastFallbackReason;
+        var plannerText = rollout.Authority == PlannerAuthority.Legacy
+            ? $"Planner: LEGACY+SHADOW  match {rollout.ShadowMatches} / mismatch {rollout.ShadowMismatches}"
+            : "Planner: BASELINE (fallback armed)";
+        GUI.color = rollout.ShadowMismatches > 0 || rollout.LastFallbackReason != null ? ClrWarning : ClrGreen;
+        GUI.Label(new Rect(x, y, w, h), plannerText);
         GUI.color = oldColor;
         y += lineH;
         if (plannerReason != null)

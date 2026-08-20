@@ -941,6 +941,9 @@ public class FSC
     /// <summary>任一炮管退膛时触发回调（WaitBackToIdle 完成后）。供雷达层刷新队列。</summary>
     public event Action? OnGunIdle;
 
+    /// <summary>触发一次队列派发: 让排队任务(手动 FIFO)占位已空闲炮管。不创建任何任务。</summary>
+    public void DispatchPending() => TryDispatch();
+
     /// <summary>清空队列中雷达自动入队的任务, 保留玩家手动入队的任务。</summary>
     public void ClearPendingTasks() {
         var kept = _taskQueue.Where(t => t.Source == TaskSource.Manual).ToList();

@@ -1,6 +1,9 @@
 using System.Collections.Generic;
+using System.Linq;
 using Il2Cpp;
 using IronNestFCS.Abstractions;
+using IronNestFCS.Domain.Diagnostics;
+using IronNestFCS.Domain.Observation;
 using IronNestFCS.Domain.Planning;
 using IronNestFCS.Logic.FCS;
 using IronNestFCS.Logic.Planning;
@@ -21,6 +24,7 @@ public class FcsModule : IFcsModule
     private LegacyDecisionRecorder? _recorder;
     private readonly PlannerRollout _rollout = new();
     private readonly BaselinePlanner _planner = new();
+    private readonly LegacySchedulerAdapter _adapter = new();
 
     private float lastScanTime;
     private float nextSweepTime;
@@ -86,7 +90,8 @@ public class FcsModule : IFcsModule
         return bound;
     }
 
-    /// <summary>任一炮管退膛 → 扫描 → 清空队列 → 给每门空闲炮管各派一个目标。扫荡中每 5s 也跑一次，用于在飞窗口到期后恢复派发。</summary>
+    /// <summary>任一炮管退膛 → 捕获快照 → 按权威模式规划/派发。扫荡中每 5s 也跑一次，用于在飞窗口到期后恢复派发。
+    /// Legacy 权威: 旧选择器 + 影子比较; Baseline 权威: 新规划器 + 适配器, 失败回退 legacy(至多一次/扫描)。</summary>
     private void OnGunIdle()
     {
         if (!autoMode) return;
@@ -111,16 +116,142 @@ public class FcsModule : IFcsModule
             return;
         }
 
+        // T1–T4 手动 FIFO 优先于自主规划(两种权威路径同规则):
+        // 手动队列非空 → 跳过自动规划, 不清队列、不取消活动任务,
+        // 只触发一次派发让手动任务占位已空闲炮管(唯一分配路径)。
+        if (fcs.QueueCan.Any(t => t.Source == TaskSource.Manual))
+        {
+            fcs.DispatchPending();
+            MelonLogger.Msg(LegacyDecisionRecorder.FormatGoldenLine(snapshot.Version, true, freeBarrels, snapshot.PendingManualTaskCount, null, "-"));
+            return;
+        }
+
+        if (_rollout.Authority == PlannerAuthority.Legacy)
+            RunLegacyAuthority(snapshot, freeBarrels);
+        else
+            RunBaselineAuthority(snapshot, freeBarrels);
+    }
+
+    /// <summary>Legacy 权威: 旧选择器派发 + 新规划器影子比较(只读)。</summary>
+    private void RunLegacyAuthority(BattleSnapshot snapshot, int freeBarrels)
+    {
         // 影子(只读): 在旧路径副作用前跑新规划器。
         // 领域程序集无 FSC/TargetRegistry 引用, 结构上改不了调度器;
         // 守卫再校验队列长度 + 双炮槽对象身份, 违例强制 legacy-only。
         _rollout.BeginShadowGuard(fcs.QueueCan.Count, fcs.LeftTask, fcs.RightTask);
-        var shadowPlan = _planner.Plan(snapshot);
+        EngagementPlan shadowPlan;
+        try
+        {
+            shadowPlan = _planner.Plan(snapshot);
+        }
+        catch (Exception ex)
+        {
+            MelonLogger.Error($"[FCS] shadow plan exception: {ex} — legacy only this cycle");
+            RunLegacyPicker(snapshot, freeBarrels);
+            return;
+        }
         if (!_rollout.AssertShadowReadOnly(fcs.QueueCan.Count, fcs.LeftTask, fcs.RightTask))
+        {
             MelonLogger.Error("[FCS] shadow violation after BaselinePlanner.Plan — forcing legacy-only");
+            RunLegacyPicker(snapshot, freeBarrels);
+            return;
+        }
 
+        RunLegacyPicker(snapshot, freeBarrels);
+
+        // 影子比较(只读): 循环产出决策记录后才比较; 只比本周期真正占位开火的决策。
+        _rollout.BeginShadowGuard(fcs.QueueCan.Count, fcs.LeftTask, fcs.RightTask);
+        var comparison = ShadowPlanComparer.Compare(snapshot, _recorder!.DispatchedDecisions(fcs.LeftTask, fcs.RightTask), shadowPlan);
+        if (!_rollout.AssertShadowReadOnly(fcs.QueueCan.Count, fcs.LeftTask, fcs.RightTask))
+        {
+            MelonLogger.Error("[FCS] shadow violation after ShadowPlanComparer.Compare — forcing legacy-only");
+            return;
+        }
+        _rollout.RecordShadow(comparison.Match, comparison.Diffs.Length > 0 ? string.Join(";", comparison.Diffs) : null);
+        MelonLogger.Msg(comparison.ToLine(snapshot.Version));
+    }
+
+    /// <summary>Baseline 权威(fallback armed): 规划 → 转换 → 入队。
+    /// 转换全有或全无, 先于第一个副作用; 任何失败本扫描回退 legacy(至多一次, 入队后不回退)。</summary>
+    private void RunBaselineAuthority(BattleSnapshot snapshot, int freeBarrels)
+    {
+        EngagementPlan plan;
+        try
+        {
+            _rollout.BeginShadowGuard(fcs.QueueCan.Count, fcs.LeftTask, fcs.RightTask);
+            plan = _planner.Plan(snapshot);
+            if (!_rollout.AssertShadowReadOnly(fcs.QueueCan.Count, fcs.LeftTask, fcs.RightTask))
+            {
+                MelonLogger.Error("[FCS] shadow violation after BaselinePlanner.Plan — forcing legacy-only");
+                RunLegacyPicker(snapshot, freeBarrels);
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            FallbackToLegacy(snapshot, freeBarrels, $"plan-exception: {ex.Message}");
+            return;
+        }
+
+        if (plan.Groups.Count == 0)
+        {
+            switch (plan.NoPlanReason)
+            {
+                case NoPlanReason.ManualQueuePending:
+                case NoPlanReason.NoFreeBarrel:
+                case NoPlanReason.NoEligibleTarget:
+                    MelonLogger.Msg(LegacyDecisionRecorder.FormatGoldenLine(snapshot.Version, true, freeBarrels, snapshot.PendingManualTaskCount, null, PlanFingerprint.Format(plan)));
+                    return;
+                case NoPlanReason.ObservationInvalid:
+                    return;
+                default:
+                    FallbackToLegacy(snapshot, freeBarrels, $"contract: no groups with reason {plan.NoPlanReason}");
+                    return;
+            }
+        }
+
+        var result = _adapter.TryConvert(plan, snapshot.Version, Time.time);
+        if (!result.Accepted)
+        {
+            FallbackToLegacy(snapshot, freeBarrels,
+                result.Rejection != PlanRejection.None ? result.Rejection.ToString() : result.Detail ?? "adapter-rejected");
+            return;
+        }
+
+        // 转换成功后才清旧自动队列, 按计划顺序入队(入队顺序即分配顺序)。
+        fcs.ClearPendingTasks();
+        var anyEnqueued = false;
+        try
+        {
+            foreach (var task in result.Tasks)
+            {
+                fcs.EnqueueTask(task);
+                anyEnqueued = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            MelonLogger.Error($"[FCS] baseline enqueue interrupted scan={snapshot.Version} enqueued={anyEnqueued}: {ex}");
+            _rollout.RecordFallback("enqueue-interrupted");
+            if (!anyEnqueued)
+                RunLegacyPicker(snapshot, freeBarrels);
+            return;
+        }
+        MelonLogger.Msg(LegacyDecisionRecorder.FormatGoldenLine(snapshot.Version, true, freeBarrels, snapshot.PendingManualTaskCount, null, PlanFingerprint.Format(plan)));
+    }
+
+    private void FallbackToLegacy(BattleSnapshot snapshot, int freeBarrels, string reason)
+    {
+        MelonLogger.Warning($"[PLAN-FALLBACK] scan={snapshot.Version} reason={reason} — running legacy picker");
+        _rollout.RecordFallback(reason);
+        RunLegacyPicker(snapshot, freeBarrels);
+    }
+
+    /// <summary>Legacy 选择器(权威决策): 清自动队列 → 逐空闲炮管派发 → 记录决策 → golden 行。</summary>
+    private void RunLegacyPicker(BattleSnapshot snapshot, int freeBarrels)
+    {
         fcs.ClearPendingTasks();   // 只清自动任务, 手动任务保留
-        _recorder.Reset();
+        _recorder!.Reset();
 
         // 逐空闲炮管派发（TryDispatch 按 Left→Right 取队首，入队顺序即分配顺序）。
         // 派发即登记(Registry.Commit 在 TryDispatch), 同帧双管去重由注册表覆盖,
@@ -146,14 +277,6 @@ public class FcsModule : IFcsModule
         }
 
         MelonLogger.Msg(_recorder.BuildGoldenLine(snapshot.Version, true, freeBarrels, snapshot.PendingManualTaskCount, null));
-
-        // 影子比较(只读): 循环产出决策记录后才比较; 只比本周期真正占位开火的决策。
-        _rollout.BeginShadowGuard(fcs.QueueCan.Count, fcs.LeftTask, fcs.RightTask);
-        var comparison = ShadowPlanComparer.Compare(snapshot, _recorder.DispatchedDecisions(fcs.LeftTask, fcs.RightTask), shadowPlan);
-        if (!_rollout.AssertShadowReadOnly(fcs.QueueCan.Count, fcs.LeftTask, fcs.RightTask))
-            MelonLogger.Error("[FCS] shadow violation after ShadowPlanComparer.Compare — forcing legacy-only");
-        _rollout.RecordShadow(comparison.Match, comparison.Diffs.Length > 0 ? string.Join(";", comparison.Diffs) : null);
-        MelonLogger.Msg(comparison.ToLine(snapshot.Version));
     }
 
     /// <summary>单点自动任务(非集群路径): 现有选择/弹种/移动快照逻辑。BlastRadiusKm 供击发爆区注册。
@@ -354,6 +477,13 @@ public class FcsModule : IFcsModule
             fcs.FireTarget(3);
         else if (kb.numpad4Key.wasPressedThisFrame || (kb.ctrlKey.isPressed && kb.digit4Key.wasPressedThisFrame))
             fcs.FireTarget(4);
+
+        // Numpad 7: 切换规划器权威(Legacy+SHADOW ↔ Baseline, fallback armed)
+        if (kb.numpad7Key.wasPressedThisFrame || (kb.ctrlKey.isPressed && kb.digit7Key.wasPressedThisFrame))
+        {
+            _rollout.ToggleAuthority();
+            MelonLogger.Msg($"[FCS] planner authority: {_rollout.Authority}");
+        }
 
         // Numpad 8: CBT 测试档位切换(2026-08-16 用户: 注释掉, 不再用测试档)
         // if (kb.numpad8Key.wasPressedThisFrame || (kb.ctrlKey.isPressed && kb.digit8Key.wasPressedThisFrame))

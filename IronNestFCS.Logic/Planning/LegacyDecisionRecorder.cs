@@ -30,12 +30,17 @@ public sealed class LegacyDecisionRecorder
         _decisions.Where(d => ReferenceEquals(d.Task, left) || ReferenceEquals(d.Task, right))
                   .Select(d => d.Intent).ToArray();
 
-    /// <summary>每扫描一条不变式结构化行(不含 IL2CPP 对象 ToString 原文)。</summary>
+    /// <summary>不变式结构化行格式(不含 IL2CPP 对象 ToString 原文)。
+    /// legacy= 字段承载本扫描权威决策指纹: legacy 模式=旧决策, baseline 模式=新计划。</summary>
+    public static string FormatGoldenLine(long scanVersion, bool valid, int freeBarrels, int manualCount, string? failure, string decisionFingerprint) =>
+        $"[PLAN-GOLDEN] scan={scanVersion}|valid={(valid ? 1 : 0)}|free={freeBarrels}|manual={manualCount}|legacy={decisionFingerprint}|reason={failure ?? "none"}";
+
+    /// <summary>每扫描一条 golden 行(legacy 模式: 旧路径决策)。</summary>
     public string BuildGoldenLine(long scanVersion, bool valid, int freeBarrels, int manualCount, string? failure)
     {
         var plan = ShadowPlanComparer.BuildPlan(scanVersion, NoPlanReason.None,
             _decisions.Select(d => d.Intent).ToArray());
-        return $"[PLAN-GOLDEN] scan={scanVersion}|valid={(valid ? 1 : 0)}|free={freeBarrels}|manual={manualCount}|legacy={PlanFingerprint.Format(plan)}|reason={failure ?? "none"}";
+        return FormatGoldenLine(scanVersion, valid, freeBarrels, manualCount, failure, PlanFingerprint.Format(plan));
     }
 
     private ShotIntent ToIntent(ArtilleryTask task, IReadOnlyList<TacticalDecider.TargetInfo> scanned)
