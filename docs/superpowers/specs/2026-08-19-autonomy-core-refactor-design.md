@@ -3,7 +3,7 @@
 - 日期：2026-08-19
 - 基线：`master@87405a4`
 - 分支：`codex/autonomy-core-refactor`
-- 状态：**Milestone 1 代码切换已完成（2026-08-20）**。BaselinePlanner 为唯一自动决策源；旧 picker（`PickTarget`/`CreateAutoTask`）、`LegacyDecisionRecorder`、影子比较与 legacy runtime fallback 已全部删除；Ctrl+Numpad7 改为 Baseline ↔ PlanningDisabled 紧急停用开关。**最终游戏内回归仍待用户部署后完成**（见 §10.3 验收清单）。
+- 状态：**Milestone 1 代码切换已完成（2026-08-20）**。BaselinePlanner 为唯一自动决策源；旧 picker（`PickTarget`/`CreateAutoTask`）、`LegacyDecisionRecorder`、影子比较与 legacy runtime fallback 已全部删除。自动/手动仍只由既有 Numpad0 切换；没有额外规划模式热键。**最终游戏内回归仍待用户部署后完成**（见 §10.3 验收清单）。
 
 ## 1. 背景与目标
 
@@ -172,7 +172,7 @@ T1–T4 是独立于自主 Planner 的高优先级 FIFO 命令通道：
 
 - 步骤 1–6 按序完成；影子验收 886/886 match、0 mismatch、0 fallback（三轮 legacy+shadow 运行时）。
 - 步骤 7 已执行：删除 `FcsModule.PickTarget`、`FcsModule.CreateAutoTask`、legacy 左/右 picker 决策循环、`LegacyDecisionRecorder`、`ShadowPlanComparer`、`PlannerAuthority.Legacy` 与全部 legacy runtime fallback；确认无调用点后删除 `FSC.TryBuildClusterTask`。
-- 默认自动模式改为 Baseline（模块初始化与热重载后均保持）；Ctrl+Numpad7 切换 Baseline ↔ PlanningDisabled（紧急停用：不创建任何自动任务，T1–T4 FIFO 与在途/活动任务不受影响）。
+- 默认自动模式由 BaselinePlanner 驱动（模块初始化与热重载后均保持）；自动/手动仍只由既有 Numpad0 切换，没有额外规划模式热键。
 - PLAN-GOLDEN 格式诊断保留，权威来源改为 Baseline 计划本身（字段名 `legacy=` → `baseline=`）。
 - 运行时验收记录：
   - [影子验收 run 1](../runtime-validation/runs/2026-08-20-shadow-acceptance-1.md)（commit c64e289，886/886 match）
@@ -220,9 +220,8 @@ T1–T4 是独立于自主 Planner 的高优先级 FIFO 命令通道：
 
 1. F9 热重载后默认 Baseline（UI 显示 `Planner: BASELINE`，无 fallback 字样）；
 2. 完成一轮移动目标自动射击（完整周期：规划 → 装填 → 装药定格 → 击发 → 退膛回位）；
-3. Ctrl+Numpad7 切 PlanningDisabled，确认无新自动任务（日志 `planner mode: PlanningDisabled`，PLAN-GOLDEN `baseline=disabled`）；
-4. 停用状态提交 T1–T4，确认 FIFO 仍按序执行；
-5. 切回 Baseline，确认自动规划恢复；
-6. 提供日志文件名和时间段归档至 `docs/runtime-validation/runs/`。
+3. 切 Numpad0 到手动模式后提交 T1–T4，确认 FIFO 仍按序执行；
+4. 切回 Numpad0 自动模式，确认 Baseline 自动规划恢复；
+5. 提供日志文件名和时间段归档至 `docs/runtime-validation/runs/`。
 
 第一里程碑完成后，下一里程碑才设计并实现真正的 Scheduler/Executor 替换。

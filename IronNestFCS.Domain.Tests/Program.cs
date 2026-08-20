@@ -56,8 +56,7 @@ var tests = new (string Name, Action Run)[]
     ("group count mismatch is reported", FingerprintCompareTests.GroupCountMismatchIsReported),
     ("no plan reason difference is reported", FingerprintCompareTests.NoPlanReasonDifferenceIsReported),
     ("flight reaches impact at estimated time", FlightTimingTests.ReachesImpactAtEstimatedTime),
-    ("disabled mode short-circuits before any planning", PlanningDisabledTests.DisabledModeShortCircuitsBeforeAnyPlanning),
-    ("planner produces real plan that disabled mode withholds", PlanningDisabledTests.PlannerProducesRealPlanThatDisabledModeWithholds)
+    ("no obsolete planning-disable mode or hotkey remains", PlannerModeRemovalTests.NoObsoletePlanningDisableModeOrHotkeyRemains)
 };
 
 var failed = 0;

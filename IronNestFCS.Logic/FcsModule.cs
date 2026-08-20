@@ -21,7 +21,6 @@ public class FcsModule : IFcsModule
     private TacticalRadar? radar;
     private MapOverlay? overlay;
     private ObservationAdapter? _observation;
-    private readonly PlannerRollout _rollout = new();
     private readonly BaselinePlanner _planner = new();
     private readonly LegacySchedulerAdapter _adapter = new();
 
@@ -77,7 +76,7 @@ public class FcsModule : IFcsModule
 
     public bool Initialize()
     {
-        window = new FcsWindow(fcs, _rollout);
+        window = new FcsWindow(fcs);
         radar = new TacticalRadar(fcs);
         overlay = new MapOverlay(fcs);
         _observation = new ObservationAdapter(fcs, radar);
@@ -88,8 +87,7 @@ public class FcsModule : IFcsModule
         return bound;
     }
 
-    /// <summary>任一炮管退膛 → 捕获快照 → Baseline 规划/派发。扫荡中每 5s 也跑一次，用于在飞窗口到期后恢复派发。
-    /// PlanningDisabled: 只停自动规划——不创建任何自动任务, 手动 FIFO 派发与在途/活动任务不受影响。</summary>
+    /// <summary>任一炮管退膛 → 捕获快照 → Baseline 规划/派发。扫荡中每 5s 也跑一次，用于在飞窗口到期后恢复派发。</summary>
     private void OnGunIdle()
     {
         if (!autoMode) return;
@@ -108,26 +106,18 @@ public class FcsModule : IFcsModule
         var freeBarrels = (snapshot.LeftBarrel.HasActiveTask ? 0 : 1) + (snapshot.RightBarrel.HasActiveTask ? 0 : 1);
         if (!snapshot.IsValid)
         {
-            _rollout.RecordInvalid(snapshot.InvalidReason);
             MelonLogger.Warning($"[FCS] scan invalid: {snapshot.InvalidReason} — keep last data, no dispatch this cycle");
             MelonLogger.Msg(FormatGoldenLine(snapshot.Version, false, freeBarrels, snapshot.PendingManualTaskCount, snapshot.InvalidReason, "-"));
             return;
         }
 
-        // T1–T4 手动 FIFO 优先于自主规划(PlanningDisabled 下同样生效):
+        // T1–T4 手动 FIFO 优先于自主规划:
         // 手动队列非空 → 跳过自动规划, 不清队列、不取消活动任务,
         // 只触发一次派发让手动任务占位已空闲炮管(唯一分配路径)。
         if (fcs.QueueCan.Any(t => t.Source == TaskSource.Manual))
         {
             fcs.DispatchPending();
             MelonLogger.Msg(FormatGoldenLine(snapshot.Version, true, freeBarrels, snapshot.PendingManualTaskCount, null, "-"));
-            return;
-        }
-
-        // PlanningDisabled: 不创建任何自动任务; 手动 FIFO 与在途/活动任务不受影响。
-        if (_rollout.Authority == PlannerAuthority.PlanningDisabled)
-        {
-            MelonLogger.Msg(FormatGoldenLine(snapshot.Version, true, freeBarrels, snapshot.PendingManualTaskCount, null, "disabled"));
             return;
         }
 
@@ -198,7 +188,7 @@ public class FcsModule : IFcsModule
     }
 
     /// <summary>结构化诊断行(格式不变, 权威来源为 Baseline 计划本身):
-    /// decision 字段承载本扫描的 Baseline 计划指纹; "-" = 未规划(手动 FIFO/停用), "disabled" = PlanningDisabled。</summary>
+    /// decision 字段承载本扫描的 Baseline 计划指纹; "-" = 未规划(手动 FIFO 或无效扫描)。</summary>
     private static string FormatGoldenLine(long scanVersion, bool valid, int freeBarrels, int manualCount, string? failure, string decisionFingerprint) =>
         $"[PLAN-GOLDEN] scan={scanVersion}|valid={(valid ? 1 : 0)}|free={freeBarrels}|manual={manualCount}|baseline={decisionFingerprint}|reason={failure ?? "none"}";
 
@@ -312,15 +302,6 @@ public class FcsModule : IFcsModule
             fcs.FireTarget(3);
         else if (kb.numpad4Key.wasPressedThisFrame || (kb.ctrlKey.isPressed && kb.digit4Key.wasPressedThisFrame))
             fcs.FireTarget(4);
-
-        // Ctrl+Numpad7: 紧急停用开关(Baseline ↔ PlanningDisabled)。
-        // PlanningDisabled 只停自动规划: 不创建任何自动任务; T1–T4 FIFO、在途/活动任务不受影响。
-        if (kb.numpad7Key.wasPressedThisFrame || (kb.ctrlKey.isPressed && kb.digit7Key.wasPressedThisFrame))
-        {
-            _rollout.ToggleAuthority();
-            MelonLogger.Msg($"[FCS] planner mode: {_rollout.Authority}" +
-                (_rollout.Authority == PlannerAuthority.PlanningDisabled ? " (auto planning disabled, manual FIFO unaffected)" : ""));
-        }
 
         // Numpad 8: CBT 测试档位切换(2026-08-16 用户: 注释掉, 不再用测试档)
         // if (kb.numpad8Key.wasPressedThisFrame || (kb.ctrlKey.isPressed && kb.digit8Key.wasPressedThisFrame))

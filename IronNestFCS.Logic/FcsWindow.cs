@@ -1,6 +1,5 @@
 using System.Linq;
 using IronNestFCS.Logic.FCS;
-using IronNestFCS.Logic.Planning;
 using MelonLoader;
 using UnityEngine;
 
@@ -9,7 +8,6 @@ namespace IronNestFCS.Logic;
 internal class FcsWindow
 {
     private readonly FSC fcs;
-    private readonly PlannerRollout rollout;
 
     private bool showWindow = true;
     private Rect panelRect = new(20, 20, 290, 140);
@@ -26,10 +24,9 @@ internal class FcsWindow
 
     public bool AutoSweepEnabled { get; set; }
 
-    public FcsWindow(FSC fcs, PlannerRollout rollout)
+    public FcsWindow(FSC fcs)
     {
         this.fcs = fcs;
-        this.rollout = rollout;
     }
 
     public void OnGui()
@@ -45,8 +42,7 @@ internal class FcsWindow
         if (fcs.RightTask != null) extra += lineH * 3;
         else extra += lineH;
         extra += lineH * (fcs.PendingCount + 1);
-        extra += lineH;   // 规划器 rollout 行
-        if (rollout.LastInvalidReason != null) extra += lineH;
+        extra += lineH;   // 规划器状态行
         extra += 12f;
 
         panelRect.height = 140f + extra;
@@ -104,22 +100,11 @@ internal class FcsWindow
         GUI.color = oldColor;
         y += lineH;
 
-        // 规划器模式状态(只读展示, 无控制): Baseline = 唯一自动决策源; PlanningDisabled = 紧急停用
-        var plannerReason = rollout.LastInvalidReason;
-        var plannerText = rollout.Authority == PlannerAuthority.PlanningDisabled
-            ? "Planner: PLANNING DISABLED"
-            : "Planner: BASELINE";
-        GUI.color = rollout.Authority == PlannerAuthority.PlanningDisabled ? ClrWarning : ClrGreen;
-        GUI.Label(new Rect(x, y, w, h), plannerText);
+        // BaselinePlanner 是唯一自动决策源；Numpad0 保持原有自动/手动总切换。
+        GUI.color = ClrGreen;
+        GUI.Label(new Rect(x, y, w, h), "Planner: BASELINE");
         GUI.color = oldColor;
         y += lineH;
-        if (plannerReason != null)
-        {
-            GUI.color = ClrLabel;
-            GUI.Label(new Rect(x, y, w, h), $"  last: {plannerReason}");
-            GUI.color = oldColor;
-            y += lineH;
-        }
 
         foreach (var item in fcs.QueueCan)
         {
