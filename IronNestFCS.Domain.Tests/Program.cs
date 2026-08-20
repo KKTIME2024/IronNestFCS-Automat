@@ -2,7 +2,16 @@ using IronNestFCS.Domain.Tests;
 
 var tests = new (string Name, Action Run)[]
 {
-    ("test runner reports a passing assertion", () => AssertEx.Equal(2, 1 + 1))
+    ("test runner reports a passing assertion", () => AssertEx.Equal(2, 1 + 1)),
+    ("invalid scan is not a valid empty battlefield", BattleSnapshotTests.InvalidScanIsNotAValidEmptyBattlefield),
+    ("unknown charge is not zero", BattleSnapshotTests.UnknownChargeIsNotZero),
+    ("snapshot copies mutable inputs", BattleSnapshotTests.SnapshotCopiesMutableInputs),
+    ("barrel states remain distinct", BattleSnapshotTests.BarrelStatesRemainDistinct),
+    ("loaded shell compatibility is explicit", BattleSnapshotTests.LoadedShellCompatibilityIsExplicit),
+    ("identity transform keeps point unchanged", BattleSnapshotTests.IdentityTransformKeepsPointUnchanged),
+    ("translation transform shifts point", BattleSnapshotTests.TranslationTransformShiftsPoint),
+    ("bearing north east west are canonical", BattleSnapshotTests.BearingNorthEastWestAreCanonical),
+    ("distance uses world unit scale", BattleSnapshotTests.DistanceUsesWorldUnitScale)
 };
 
 var failed = 0;
