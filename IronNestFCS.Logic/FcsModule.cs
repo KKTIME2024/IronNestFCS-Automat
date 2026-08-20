@@ -21,7 +21,6 @@ public class FcsModule : IFcsModule
     private TacticalRadar? radar;
     private MapOverlay? overlay;
     private ObservationAdapter? _observation;
-    private LegacyDecisionRecorder? _recorder;
     private readonly PlannerRollout _rollout = new();
     private readonly BaselinePlanner _planner = new();
     private readonly LegacySchedulerAdapter _adapter = new();
@@ -82,7 +81,6 @@ public class FcsModule : IFcsModule
         radar = new TacticalRadar(fcs);
         overlay = new MapOverlay(fcs);
         _observation = new ObservationAdapter(fcs, radar);
-        _recorder = new LegacyDecisionRecorder(fcs);
         fcs.EntityLocator = radar;   // 手动任务目标解析
         fcs.OnGunIdle += OnGunIdle;
         bool bound = fcs.TryBind();
@@ -90,8 +88,8 @@ public class FcsModule : IFcsModule
         return bound;
     }
 
-    /// <summary>任一炮管退膛 → 捕获快照 → 按权威模式规划/派发。扫荡中每 5s 也跑一次，用于在飞窗口到期后恢复派发。
-    /// Legacy 权威: 旧选择器 + 影子比较; Baseline 权威: 新规划器 + 适配器, 失败回退 legacy(至多一次/扫描)。</summary>
+    /// <summary>任一炮管退膛 → 捕获快照 → Baseline 规划/派发。扫荡中每 5s 也跑一次，用于在飞窗口到期后恢复派发。
+    /// PlanningDisabled: 只停自动规划——不创建任何自动任务, 手动 FIFO 派发与在途/活动任务不受影响。</summary>
     private void OnGunIdle()
     {
         if (!autoMode) return;
@@ -104,7 +102,7 @@ public class FcsModule : IFcsModule
         if (_emergencyMoveInProgress) return;
         AdjustAllValves(0f);
 
-        // 观测捕获(内部雷达扫描一次): 无效观测按 ObservationInvalid 处理——
+        // 观测捕获(内部雷达扫描一次): 无效观测 fail-closed——
         // 不清队列、不规划、不派发, 保留上次可信数据, 绝不对账空存活集。
         var snapshot = _observation!.Capture().Current;
         var freeBarrels = (snapshot.LeftBarrel.HasActiveTask ? 0 : 1) + (snapshot.RightBarrel.HasActiveTask ? 0 : 1);
@@ -112,84 +110,42 @@ public class FcsModule : IFcsModule
         {
             _rollout.RecordInvalid(snapshot.InvalidReason);
             MelonLogger.Warning($"[FCS] scan invalid: {snapshot.InvalidReason} — keep last data, no dispatch this cycle");
-            MelonLogger.Msg(_recorder!.BuildGoldenLine(snapshot.Version, false, freeBarrels, snapshot.PendingManualTaskCount, snapshot.InvalidReason));
+            MelonLogger.Msg(FormatGoldenLine(snapshot.Version, false, freeBarrels, snapshot.PendingManualTaskCount, snapshot.InvalidReason, "-"));
             return;
         }
 
-        // T1–T4 手动 FIFO 优先于自主规划(两种权威路径同规则):
+        // T1–T4 手动 FIFO 优先于自主规划(PlanningDisabled 下同样生效):
         // 手动队列非空 → 跳过自动规划, 不清队列、不取消活动任务,
         // 只触发一次派发让手动任务占位已空闲炮管(唯一分配路径)。
         if (fcs.QueueCan.Any(t => t.Source == TaskSource.Manual))
         {
             fcs.DispatchPending();
-            MelonLogger.Msg(LegacyDecisionRecorder.FormatGoldenLine(snapshot.Version, true, freeBarrels, snapshot.PendingManualTaskCount, null, "-"));
+            MelonLogger.Msg(FormatGoldenLine(snapshot.Version, true, freeBarrels, snapshot.PendingManualTaskCount, null, "-"));
             return;
         }
 
-        if (_rollout.Authority == PlannerAuthority.Legacy)
-            RunLegacyAuthority(snapshot, freeBarrels);
-        else
-            RunBaselineAuthority(snapshot, freeBarrels);
+        // PlanningDisabled: 不创建任何自动任务; 手动 FIFO 与在途/活动任务不受影响。
+        if (_rollout.Authority == PlannerAuthority.PlanningDisabled)
+        {
+            MelonLogger.Msg(FormatGoldenLine(snapshot.Version, true, freeBarrels, snapshot.PendingManualTaskCount, null, "disabled"));
+            return;
+        }
+
+        RunBaselineAuthority(snapshot, freeBarrels);
     }
 
-    /// <summary>Legacy 权威: 旧选择器派发 + 新规划器影子比较(只读)。</summary>
-    private void RunLegacyAuthority(BattleSnapshot snapshot, int freeBarrels)
-    {
-        // 影子(只读): 在旧路径副作用前跑新规划器。
-        // 领域程序集无 FSC/TargetRegistry 引用, 结构上改不了调度器;
-        // 守卫再校验队列长度 + 双炮槽对象身份, 违例强制 legacy-only。
-        _rollout.BeginShadowGuard(fcs.QueueCan.Count, fcs.LeftTask, fcs.RightTask);
-        EngagementPlan shadowPlan;
-        try
-        {
-            shadowPlan = _planner.Plan(snapshot);
-        }
-        catch (Exception ex)
-        {
-            MelonLogger.Error($"[FCS] shadow plan exception: {ex} — legacy only this cycle");
-            RunLegacyPicker(snapshot, freeBarrels);
-            return;
-        }
-        if (!_rollout.AssertShadowReadOnly(fcs.QueueCan.Count, fcs.LeftTask, fcs.RightTask))
-        {
-            MelonLogger.Error("[FCS] shadow violation after BaselinePlanner.Plan — forcing legacy-only");
-            RunLegacyPicker(snapshot, freeBarrels);
-            return;
-        }
-
-        RunLegacyPicker(snapshot, freeBarrels);
-
-        // 影子比较(只读): 循环产出决策记录后才比较; 只比本周期真正占位开火的决策。
-        _rollout.BeginShadowGuard(fcs.QueueCan.Count, fcs.LeftTask, fcs.RightTask);
-        var comparison = ShadowPlanComparer.Compare(snapshot, _recorder!.DispatchedDecisions(fcs.LeftTask, fcs.RightTask), shadowPlan);
-        if (!_rollout.AssertShadowReadOnly(fcs.QueueCan.Count, fcs.LeftTask, fcs.RightTask))
-        {
-            MelonLogger.Error("[FCS] shadow violation after ShadowPlanComparer.Compare — forcing legacy-only");
-            return;
-        }
-        _rollout.RecordShadow(comparison.Match, comparison.Diffs.Length > 0 ? string.Join(";", comparison.Diffs) : null);
-        MelonLogger.Msg(comparison.ToLine(snapshot.Version));
-    }
-
-    /// <summary>Baseline 权威(fallback armed): 规划 → 转换 → 入队。
-    /// 转换全有或全无, 先于第一个副作用; 任何失败本扫描回退 legacy(至多一次, 入队后不回退)。</summary>
+    /// <summary>Baseline 权威(唯一自动决策源): 规划 → 转换 → 入队。
+    /// 转换全有或全无, 先于第一个副作用; 任何失败本扫描不派发(无回退路径)。</summary>
     private void RunBaselineAuthority(BattleSnapshot snapshot, int freeBarrels)
     {
         EngagementPlan plan;
         try
         {
-            _rollout.BeginShadowGuard(fcs.QueueCan.Count, fcs.LeftTask, fcs.RightTask);
             plan = _planner.Plan(snapshot);
-            if (!_rollout.AssertShadowReadOnly(fcs.QueueCan.Count, fcs.LeftTask, fcs.RightTask))
-            {
-                MelonLogger.Error("[FCS] shadow violation after BaselinePlanner.Plan — forcing legacy-only");
-                RunLegacyPicker(snapshot, freeBarrels);
-                return;
-            }
         }
         catch (Exception ex)
         {
-            FallbackToLegacy(snapshot, freeBarrels, $"plan-exception: {ex.Message}");
+            MelonLogger.Error($"[FCS] baseline plan exception scan={snapshot.Version}: {ex} — no dispatch this cycle");
             return;
         }
 
@@ -200,15 +156,15 @@ public class FcsModule : IFcsModule
                 case NoPlanReason.ManualQueuePending:
                 case NoPlanReason.NoFreeBarrel:
                 case NoPlanReason.NoEligibleTarget:
-                    // 与旧路径一致: 无计划也要先清旧自动队列, 防陈旧快照任务稍后继续发射
+                    // 无计划也要先清旧自动队列, 防陈旧快照任务稍后继续发射
                     // (手动任务不受影响: ClearPendingTasks 只清 Auto)。
                     fcs.ClearPendingTasks();
-                    MelonLogger.Msg(LegacyDecisionRecorder.FormatGoldenLine(snapshot.Version, true, freeBarrels, snapshot.PendingManualTaskCount, null, PlanFingerprint.Format(plan)));
+                    MelonLogger.Msg(FormatGoldenLine(snapshot.Version, true, freeBarrels, snapshot.PendingManualTaskCount, null, PlanFingerprint.Format(plan)));
                     return;
                 case NoPlanReason.ObservationInvalid:
                     return;
                 default:
-                    FallbackToLegacy(snapshot, freeBarrels, $"contract: no groups with reason {plan.NoPlanReason}");
+                    MelonLogger.Error($"[FCS] baseline contract: no groups with reason {plan.NoPlanReason} — no dispatch this cycle");
                     return;
             }
         }
@@ -216,8 +172,9 @@ public class FcsModule : IFcsModule
         var result = _adapter.TryConvert(plan, snapshot.Version, Time.time);
         if (!result.Accepted)
         {
-            FallbackToLegacy(snapshot, freeBarrels,
-                result.Rejection != PlanRejection.None ? result.Rejection.ToString() : result.Detail ?? "adapter-rejected");
+            MelonLogger.Warning($"[FCS] baseline adapter rejected scan={snapshot.Version}: " +
+                (result.Rejection != PlanRejection.None ? result.Rejection.ToString() : result.Detail ?? "adapter-rejected") +
+                " — no dispatch this cycle");
             return;
         }
 
@@ -235,142 +192,15 @@ public class FcsModule : IFcsModule
         catch (Exception ex)
         {
             MelonLogger.Error($"[FCS] baseline enqueue interrupted scan={snapshot.Version} enqueued={anyEnqueued}: {ex}");
-            _rollout.RecordFallback("enqueue-interrupted");
-            if (!anyEnqueued)
-                RunLegacyPicker(snapshot, freeBarrels);
             return;
         }
-        MelonLogger.Msg(LegacyDecisionRecorder.FormatGoldenLine(snapshot.Version, true, freeBarrels, snapshot.PendingManualTaskCount, null, PlanFingerprint.Format(plan)));
+        MelonLogger.Msg(FormatGoldenLine(snapshot.Version, true, freeBarrels, snapshot.PendingManualTaskCount, null, PlanFingerprint.Format(plan)));
     }
 
-    private void FallbackToLegacy(BattleSnapshot snapshot, int freeBarrels, string reason)
-    {
-        MelonLogger.Warning($"[PLAN-FALLBACK] scan={snapshot.Version} reason={reason} — running legacy picker");
-        _rollout.RecordFallback(reason);
-        RunLegacyPicker(snapshot, freeBarrels);
-    }
-
-    /// <summary>Legacy 选择器(权威决策): 清自动队列 → 逐空闲炮管派发 → 记录决策 → golden 行。</summary>
-    private void RunLegacyPicker(BattleSnapshot snapshot, int freeBarrels)
-    {
-        fcs.ClearPendingTasks();   // 只清自动任务, 手动任务保留
-        _recorder!.Reset();
-
-        // 逐空闲炮管派发（TryDispatch 按 Left→Right 取队首，入队顺序即分配顺序）。
-        // 派发即登记(Registry.Commit 在 TryDispatch), 同帧双管去重由注册表覆盖,
-        // 在飞窗口约束也由注册表统一承担(炮上/排队/在飞/手动提交的目标全部跳过)。
-        // 2026-08-16: 移除手动弹保护(用户)——膛内有任何弹(含手动装的)都照常派发,
-        // 膛内状态接管(ReadyToFire 复用/退壳重装)统一处理, 不再跳过本管。
-        int nextTargetId = 1;
-        foreach (var barrel in new[] { LeftRight.Left, LeftRight.Right })
-        {
-            if (barrel == LeftRight.Left ? fcs.LeftTask != null : fcs.RightTask != null) continue;
-
-            var t = PickTarget();
-            if (t == null) continue;
-            var ti = t.Value;  // TargetInfo 是 struct,Nullable 解包
-
-            // 软+静态目标先试集群(一发清多, 省弹); 无集群回单点。选择流程不动。
-            var fundMargin = fcs.Cbt.IsCbtMode ? fcs.Cbt.FundMargin : float.MaxValue;
-            var task = fcs.TryBuildClusterTask(ti, nextTargetId);
-            if (task == null) task = CreateAutoTask(ti, nextTargetId, fcs.Cbt.ShouldUseMaxCharge(), fundMargin);
-            nextTargetId++;
-            // 入队前记录: EnqueueTask 会立即派发并登记爆区(Registry.Commit),
-            // 之后推导静态集群成员会把刚登记的爆区成员过滤掉 → 影子假 mismatch。
-            _recorder.Record(task, radar!.ObservedHostiles);
-            fcs.EnqueueTask(task);
-        }
-
-        MelonLogger.Msg(_recorder.BuildGoldenLine(snapshot.Version, true, freeBarrels, snapshot.PendingManualTaskCount, null));
-    }
-
-    /// <summary>单点自动任务(非集群路径): 现有选择/弹种/移动快照逻辑。BlastRadiusKm 供击发爆区注册。
-    /// CBT 双轨装药(§3.2): 吃紧/危急 → useMaxCharge=true(满装 6 包抢节奏), 其余最低装药。
-    /// CBT 基金纪律(§3.6): fundMargin 传入弹种选择(AP 仅 3★ 装甲且扣款后 ≥ 基金线)。</summary>
-    private static ArtilleryTask CreateAutoTask(TacticalDecider.TargetInfo ti, int targetId, bool useMaxCharge, float fundMargin)
-    {
-        var task = new ArtilleryTask
-        {
-            targetId = targetId,
-            entityId = ti.EntityId,
-            entityName = ti.Name,
-            angel = ti.Angle,
-            distance = ti.Distance,
-            position = ti.WorldPos,
-            bulletType = TacticalDecider.ChooseShellType(ti, fundMargin),
-            useMaxCharge = useMaxCharge,
-            IsFdc = ti.IsFdc,
-            Source = TaskSource.Auto
-        };
-        // 移动目标冻结快照: 提前量解算全程从这三个字段外推(匀速假设, 不查雷达)。
-        // 速度未建立(刚出现)时标记 VelocityUnknown: 装填期从雷达采纳后再外推。
-        task.IsMoving = ti.IsMoving;
-        task.AimP0 = ti.WorldPos;
-        task.AimVel = ti.Velocity;
-        task.AimStartTime = Time.time;
-        task.VelocityUnknown = !ti.VelocityKnown;
-        task.BlastRadiusKm = ShellData.BlastRadiusKm(task.bulletType);
-        return task;
-    }
-
-    /// <summary>
-    /// 挑目标: 注册表(炮上/排队/在飞/手动提交)中的目标跳过, 返回最高优先级可选目标。
-    /// CBT 扣留(§3.4): 非吃紧期(开局/宽裕)不派 FDC——开局打=浪费暂停储备, 宽裕期打=浪费。
-    /// CBT 基金纪律(§3.6): 装甲/地下目标需 AP(10 点), 扣款后仍 ≥ 基金线才可派;
-    /// 买不起 AP 时跳过(HE 打不穿, 发了白费)。
-    /// 全部可选目标都被承包 → 返回 null，炮管空等；窗口到期后由周期重扫恢复派发。
-    /// </summary>
-    private TacticalDecider.TargetInfo? PickTarget()
-    {
-        var phase = fcs.Cbt.Phase;
-
-        // FDC 活动期停派(2026-08-16 用户): FDC 装填/在飞/未确认期间, 非暂停期不派其他目标。
-        // Paused 窗口内放行: 窗口内火炮(+30s 顶倒计时)是主角——FDC 暂停只冻结不解除危急,
-        // 窗口内不打火炮则 FDC 循环白烧储备(收益 0, 用户 16:06 指出)。Paused 排序火炮 8 >
-        // FDC 7 保证火炮先派先装填先击发先落地 → FDC 弹最后落地续暂停, 不重复 16:05 白费。
-        if (phase != CbtMonitor.CbtPhase.Paused && fcs.HasActiveFdcTask) return null;
-
-        // 流程 1(2026-08-16 用户设定): 倒计时 ≤ Critical = 紧急状态, 派发停止——不派任何新目标。
-        // FDC = 移动的 fallback: 移动可用(积分≥90 且非 FastNoMove 且冷却过) → 完全不派,
-        // 双管空闲, 无在飞弹时触发 MoveZone(暂停+转移); 移动不可用(没积分/FastNoMove/冷却中)
-        // → 只派 FDC 立刻装填(AP)——开火前落地顺序保护保证 FDC 弹是最后一发落地
-        // (旧弹先落地 ≥0.1s, 暂停不被立即解除)。
-        if (phase == CbtMonitor.CbtPhase.Critical)
-        {
-            bool moveAvailable = fcs.Cbt.Mode != CbtMonitor.TestMode.FastNoMove
-                && fcs.Cbt.RequisitionPoints >= CbtMonitor.FundLine
-                && Time.time - _lastEmergencyMoveTime > EmergencyMoveCooldown;
-            if (moveAvailable) return null;
-            foreach (var t in radar.AliveHostiles)
-            {
-                if (!t.IsFdc) continue;
-                if (fcs.Registry.IsHandled(t.EntityId)) continue;
-                if (fcs.Registry.IsHandledNear(t.WorldPos, 0f)) continue;
-                if (!fcs.Cbt.FdcDispatchable()) continue;
-                if (fcs.HasActiveFdcTask) continue;   // 一次只派一个(含在飞)
-                return t;
-            }
-            return null;
-        }
-
-        // 流程 2 窗口内(Paused)与常规: 恢复正常排序派发。
-        // Paused 排序(FDC 8 > 火炮 7 > 3★ 6)即窗口内组合拳: 第一管 FDC 续暂停 +
-        // 第二管火炮(+30s 白赚), 双管 ReadyToFire 后由击发协调齐射。
-        foreach (var t in radar.AliveHostiles)
-        {
-            if (fcs.Registry.IsHandled(t.EntityId)) continue;
-            if (fcs.Registry.IsHandledNear(t.WorldPos, 0f)) continue;
-            // FDC 扣留: 只在危急/暂停窗口放行(流程 1/2); 吃紧/宽裕期跳过
-            if (t.IsFdc && !fcs.Cbt.FdcDispatchable()) continue;
-            // FDC 一次只派一个: 双管同时打 2 个 FDC → 两发几乎同时落地, 暂停窗口重叠浪费
-            if (t.IsFdc && fcs.HasActiveFdcTask) continue;
-            // 基金纪律: CBT 下装甲/地下目标必须 AP 且扣款后 ≥ 基金线; 买不起 → 跳过(HE 打不穿)。
-            // FDC 豁免(用户): 唯一炮弹控制的暂停来源, 买不起 AP 也派(10 点破例)。
-            if (fcs.Cbt.IsCbtMode && !t.IsFdc && (t.IsArmored || t.IsUnderground) && fcs.Cbt.FundMargin < 10f) continue;
-            return t;
-        }
-        return null;
-    }
+    /// <summary>结构化诊断行(格式不变, 权威来源为 Baseline 计划本身):
+    /// decision 字段承载本扫描的 Baseline 计划指纹; "-" = 未规划(手动 FIFO/停用), "disabled" = PlanningDisabled。</summary>
+    private static string FormatGoldenLine(long scanVersion, bool valid, int freeBarrels, int manualCount, string? failure, string decisionFingerprint) =>
+        $"[PLAN-GOLDEN] scan={scanVersion}|valid={(valid ? 1 : 0)}|free={freeBarrels}|manual={manualCount}|baseline={decisionFingerprint}|reason={failure ?? "none"}";
 
     public void Update()
     {
@@ -408,7 +238,7 @@ public class FcsModule : IFcsModule
             lastCbtPollTime = Time.time;
             // 统一紧急链路(2026-08-16 用户设计): CRITICAL 检测 → 紧急状态。
             // 积分分流: 有积分(≥基金线90) → 紧急移动(MoveZone 65 点, 暂停+转移阵地);
-            // 没积分 → 派发层走 FDC(免费暂停, 见 PickTarget 紧急收敛)。
+            // 没积分 → 派发层走 FDC(免费暂停, 由规划层 FdcDispatchable 把关)。
             if (fcs.Cbt.ShouldEmergencyMove() && !_emergencyMoveTriggered
                 // FDC 暂停窗口内不触发: FDC 击杀暂停已生效, 此时买 MoveZone 65 点
                 // 重复花(暂停部分浪费)+ 转移阵地重置炮管 → 组合拳被毁。
@@ -483,11 +313,13 @@ public class FcsModule : IFcsModule
         else if (kb.numpad4Key.wasPressedThisFrame || (kb.ctrlKey.isPressed && kb.digit4Key.wasPressedThisFrame))
             fcs.FireTarget(4);
 
-        // Numpad 7: 切换规划器权威(Legacy+SHADOW ↔ Baseline, fallback armed)
+        // Ctrl+Numpad7: 紧急停用开关(Baseline ↔ PlanningDisabled)。
+        // PlanningDisabled 只停自动规划: 不创建任何自动任务; T1–T4 FIFO、在途/活动任务不受影响。
         if (kb.numpad7Key.wasPressedThisFrame || (kb.ctrlKey.isPressed && kb.digit7Key.wasPressedThisFrame))
         {
             _rollout.ToggleAuthority();
-            MelonLogger.Msg($"[FCS] planner authority: {_rollout.Authority}");
+            MelonLogger.Msg($"[FCS] planner mode: {_rollout.Authority}" +
+                (_rollout.Authority == PlannerAuthority.PlanningDisabled ? " (auto planning disabled, manual FIFO unaffected)" : ""));
         }
 
         // Numpad 8: CBT 测试档位切换(2026-08-16 用户: 注释掉, 不再用测试档)

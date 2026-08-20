@@ -3,7 +3,7 @@
 - 日期：2026-08-19
 - 基线：`master@87405a4`
 - 分支：`codex/autonomy-core-refactor`
-- 状态：设计已讨论批准，等待书面复核
+- 状态：**Milestone 1 代码切换已完成（2026-08-20）**。BaselinePlanner 为唯一自动决策源；旧 picker（`PickTarget`/`CreateAutoTask`）、`LegacyDecisionRecorder`、影子比较与 legacy runtime fallback 已全部删除；Ctrl+Numpad7 改为 Baseline ↔ PlanningDisabled 紧急停用开关。**最终游戏内回归仍待用户部署后完成**（见 §10.3 验收清单）。
 
 ## 1. 背景与目标
 
@@ -168,6 +168,17 @@ T1–T4 是独立于自主 Planner 的高优先级 FIFO 命令通道：
 6. 在影子结果通过后，用 `LegacySchedulerAdapter` 将普通独立组转换为现有 ArtilleryTask；保留运行时旧路径回退开关。
 7. 完成运行时验收后删除旧 `PickTarget` / `CreateAutoTask`，结束第一里程碑。
 
+**Milestone 1 完成情况（2026-08-20）：**
+
+- 步骤 1–6 按序完成；影子验收 886/886 match、0 mismatch、0 fallback（三轮 legacy+shadow 运行时）。
+- 步骤 7 已执行：删除 `FcsModule.PickTarget`、`FcsModule.CreateAutoTask`、legacy 左/右 picker 决策循环、`LegacyDecisionRecorder`、`ShadowPlanComparer`、`PlannerAuthority.Legacy` 与全部 legacy runtime fallback；确认无调用点后删除 `FSC.TryBuildClusterTask`。
+- 默认自动模式改为 Baseline（模块初始化与热重载后均保持）；Ctrl+Numpad7 切换 Baseline ↔ PlanningDisabled（紧急停用：不创建任何自动任务，T1–T4 FIFO 与在途/活动任务不受影响）。
+- PLAN-GOLDEN 格式诊断保留，权威来源改为 Baseline 计划本身（字段名 `legacy=` → `baseline=`）。
+- 运行时验收记录：
+  - [影子验收 run 1](../runtime-validation/runs/2026-08-20-shadow-acceptance-1.md)（commit c64e289，886/886 match）
+  - [Baseline 权威实弹 run 1](../runtime-validation/runs/2026-08-20-baseline-authority-1.md)（commit c64e289，0 fallback，手动 T1–T4 FIFO/F9/无效扫描通过）
+- 最终游戏内回归（切换后的新构建）仍待用户部署后完成：F9 默认 Baseline、移动目标完整自动射击周期、PlanningDisabled 停用/恢复、停用态 T1–T4 FIFO。
+
 ## 9. 第一里程碑非目标
 
 - 新 Scheduler 或 FSC 拆分；
@@ -203,4 +214,15 @@ T1–T4 是独立于自主 Planner 的高优先级 FIFO 命令通道：
 
 至少完成三种不同关卡或目标组成的运行，每种覆盖一个完整自动交战周期，影子计划零差异；同时通过 T1–T4、热重载和无效扫描场景。每轮验收记录版本、开始时间、场景、操作步骤和日志结论。
 
-只有以上门槛全部满足，才能让新 Planner 成为权威路径。第一里程碑完成后，下一里程碑才设计并实现真正的 Scheduler/Executor 替换。
+只有以上门槛全部满足，才能让新 Planner 成为权威路径。
+
+**切换后游戏内回归清单（待用户部署执行）：**
+
+1. F9 热重载后默认 Baseline（UI 显示 `Planner: BASELINE`，无 fallback 字样）；
+2. 完成一轮移动目标自动射击（完整周期：规划 → 装填 → 装药定格 → 击发 → 退膛回位）；
+3. Ctrl+Numpad7 切 PlanningDisabled，确认无新自动任务（日志 `planner mode: PlanningDisabled`，PLAN-GOLDEN `baseline=disabled`）；
+4. 停用状态提交 T1–T4，确认 FIFO 仍按序执行；
+5. 切回 Baseline，确认自动规划恢复；
+6. 提供日志文件名和时间段归档至 `docs/runtime-validation/runs/`。
+
+第一里程碑完成后，下一里程碑才设计并实现真正的 Scheduler/Executor 替换。

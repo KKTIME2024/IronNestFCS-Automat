@@ -69,7 +69,7 @@ public static class TacticalDecider
     /// 暂停窗口(2026-08-16 用户修正): 火炮(8,+30s 顶倒计时是主角——FDC 暂停只冻结不解除危急,
     /// 窗口内不打火炮则 FDC 循环白烧储备收益 0) > FDC(7,续暂停保底) > 3★(6) >
     /// 高价值(5) > 1-2★(4) > 装甲/工事(3) > 普通(2)。窗口内无满装(最低装药=ToF 长=窗口长)。
-    /// 数值只用于排序, FDC 派发与否最终由 FcsModule.PickTarget 的 FdcDispatchable 把关。</summary>
+    /// 数值只用于排序, FDC 派发与否最终由规划层(BaselinePlanner)把关。</summary>
     private static int CbtPriority(TargetInfo t, CbtMonitor.CbtPhase phase)
     {
         bool urgent = phase is CbtMonitor.CbtPhase.Urgent or CbtMonitor.CbtPhase.Critical;
@@ -95,7 +95,7 @@ public static class TacticalDecider
     /// <summary>
     /// 自动弹种选择：装甲/地下 → AP（穿透）；软目标单点 → DRIL（超小毁伤半径精确弹——
     /// 直击必死且不误伤/不屏蔽邻居，比 LE 更精确）。免疫时沿链降级：软 DRIL→LE→HE→HCHE、
-    /// 甲 AP→HE→HCHE。注意：集群路径不经过这里（TryBuildClusterTask 直接选 HE/HCHE）。
+    /// 甲 AP→HE→HCHE。注意：集群路径不经过这里（BaselinePlanner 的集群规划直接选 HE/HCHE）。
     /// CBT 基金纪律(§3.6, 仅 fundMargin != MaxValue 即 CBT 模式生效): AP 成本 10 点,
     /// 仅 3★ 装甲或地下目标(弹药库/地堡 HE 打不穿, 必须 AP)且扣款后仍 ≥ 基金线才用;
     /// 其余装甲降级 HE。非 CBT 模式任何装甲都打 AP。

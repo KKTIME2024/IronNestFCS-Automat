@@ -1,3 +1,5 @@
+using System;
+
 namespace IronNestFCS.Domain.Tests;
 
 internal static class AssertEx
@@ -15,4 +17,10 @@ internal static class AssertEx
 
     public static T Throws<T>(Action action) where T : Exception
     { try { action(); } catch (T ex) { return ex; } throw new InvalidOperationException($"Expected {typeof(T).Name}."); }
+
+    public static void Contains(string needle, string haystack)
+    { if (!haystack.Contains(needle, StringComparison.Ordinal)) throw new InvalidOperationException($"Expected to find <{needle}>."); }
+
+    public static void DoesNotContain(string needle, string haystack)
+    { if (haystack.Contains(needle, StringComparison.Ordinal)) throw new InvalidOperationException($"Expected NOT to find <{needle}>."); }
 }

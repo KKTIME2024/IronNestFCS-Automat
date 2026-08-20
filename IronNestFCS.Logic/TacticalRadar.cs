@@ -47,7 +47,7 @@ public class TacticalRadar
 
     public bool AutoPlaceMarkers { get; set; } = true;
     public List<TacticalDecider.TargetInfo> AliveHostiles { get; private set; } = new();
-    /// <summary>最近一次成功扫描的枚举顺序目标(未排序)。规划路径基于它独立排序; 旧路径用 AliveHostiles。</summary>
+    /// <summary>最近一次成功扫描的枚举顺序目标(未排序)。规划路径(BaselinePlanner)基于它独立排序。</summary>
     public List<TacticalDecider.TargetInfo> ObservedHostiles { get; private set; } = new();
     /// <summary>存活友军世界坐标(集群落点友军禁区检查用), Scan 时刷新。</summary>
     public List<Vector3> AllyPositions { get; private set; } = new();
@@ -114,7 +114,7 @@ public class TacticalRadar
         // 行为与非反炮兵关一致(该路径已验证稳定)。CBT 修复在 dev 分支进行, 稳定后恢复本行。
         fcs.Cbt.HasFdc = false;
 
-        // 枚举顺序副本(规划路径独立排序); 旧路径用排序结果
+        // 枚举顺序副本(规划路径独立排序); AliveHostiles 保留排序结果供诊断/手动解析
         ObservedHostiles = new List<TacticalDecider.TargetInfo>(targets);
         TacticalDecider.SortTargets(targets, fcs.Turret.LastSetAngle, fcs.Cbt.SortPhase);
         AliveHostiles = targets;
