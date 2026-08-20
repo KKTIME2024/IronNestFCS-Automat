@@ -3,7 +3,7 @@
 - 日期：2026-08-19
 - 基线：`master@87405a4`
 - 分支：`codex/autonomy-core-refactor`
-- 状态：**Milestone 1 代码切换已完成（2026-08-20）**。BaselinePlanner 为唯一自动决策源；旧 picker（`PickTarget`/`CreateAutoTask`）、`LegacyDecisionRecorder`、影子比较与 legacy runtime fallback 已全部删除。自动/手动仍只由既有 Numpad0 切换；没有额外规划模式热键。**最终游戏内回归仍待用户部署后完成**（见 §10.3 验收清单）。
+- 状态：**Milestone 1 已接受（2026-08-21）**。BaselinePlanner 为唯一自动决策源；旧 picker（`PickTarget`/`CreateAutoTask`）、`LegacyDecisionRecorder`、影子比较与 legacy runtime fallback 已全部删除。自动/手动仍只由既有 Numpad0 切换；没有额外规划模式热键。影子、Baseline 实弹、手动 FIFO、F9、无效扫描及移动预测修复均已在游戏中验证。
 
 ## 1. 背景与目标
 
@@ -177,7 +177,7 @@ T1–T4 是独立于自主 Planner 的高优先级 FIFO 命令通道：
 - 运行时验收记录：
   - [影子验收 run 1](../runtime-validation/runs/2026-08-20-shadow-acceptance-1.md)（commit c64e289，886/886 match）
   - [Baseline 权威实弹 run 1](../runtime-validation/runs/2026-08-20-baseline-authority-1.md)（commit c64e289，0 fallback，手动 T1–T4 FIFO/F9/无效扫描通过）
-- 最终游戏内回归（切换后的新构建）仍待用户部署后完成：F9 默认 Baseline、移动目标完整自动射击周期、PlanningDisabled 停用/恢复、停用态 T1–T4 FIFO。
+- 用户于 2026-08-21 确认：此前核心作战路径均已在游戏中验证；最后删除的仅为冗余 Numpad7 停用开关，不另行要求游戏回归。
 
 ## 9. 第一里程碑非目标
 
@@ -216,7 +216,7 @@ T1–T4 是独立于自主 Planner 的高优先级 FIFO 命令通道：
 
 只有以上门槛全部满足，才能让新 Planner 成为权威路径。
 
-**切换后游戏内回归清单（待用户部署执行）：**
+**切换后游戏内回归清单（已由用户接受）：**
 
 1. F9 热重载后默认 Baseline（UI 显示 `Planner: BASELINE`，无 fallback 字样）；
 2. 完成一轮移动目标自动射击（完整周期：规划 → 装填 → 装药定格 → 击发 → 退膛回位）；
