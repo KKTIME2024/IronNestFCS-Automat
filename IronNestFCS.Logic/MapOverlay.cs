@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using IronNestFCS.Domain.Execution;
 using IronNestFCS.Logic.FCS;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -278,7 +279,10 @@ public class MapOverlay
         }
 
         // 移动目标: 前进路线 = 当前位置 → 落点(提前点), 白虚线+箭头尖端扎进毁伤圈
-        bool showPath = t.IsMoving && TargetLeadSolver.IsMoving(t.AimVel);
+        // 落点已在击发时锁存。预计弹着后若仍按 AimVel 推进当前位置，路径会越过锁存点并反向，
+        // 伪装成一段新的"负方向"交汇预测；弹着后只保留固定落点和倒计时/任务生命周期。
+        bool showPath = t.IsMoving && TargetLeadSolver.IsMoving(t.AimVel)
+            && (!t.Fired || !FlightTiming.HasReachedImpact(Time.time - t.FiredAt, t.EstimatedToF));
         if (showPath)
         {
             Vector3 now = fcs.MapTable.WorldToMapLocal(t.AimP0 + t.AimVel * (Time.time - t.AimStartTime));

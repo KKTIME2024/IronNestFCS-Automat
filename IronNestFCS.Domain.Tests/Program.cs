@@ -54,7 +54,8 @@ var tests = new (string Name, Action Run)[]
     ("motion snapshot differences are reported", FingerprintCompareTests.MotionSnapshotDifferencesAreReported),
     ("all differences are reported", FingerprintCompareTests.AllDifferencesAreReported),
     ("group count mismatch is reported", FingerprintCompareTests.GroupCountMismatchIsReported),
-    ("no plan reason difference is reported", FingerprintCompareTests.NoPlanReasonDifferenceIsReported)
+    ("no plan reason difference is reported", FingerprintCompareTests.NoPlanReasonDifferenceIsReported),
+    ("flight reaches impact at estimated time", FlightTimingTests.ReachesImpactAtEstimatedTime)
 };
 
 var failed = 0;
