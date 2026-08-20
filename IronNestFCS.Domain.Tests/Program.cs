@@ -26,7 +26,17 @@ var tests = new (string Name, Action Run)[]
     ("one barrel busy plans one shot", BaselinePlannerTests.OneBarrelBusyPlansOneShot),
     ("reserved targets are skipped", BaselinePlannerTests.ReservedTargetsAreSkipped),
     ("moving snapshot fields are preserved", BaselinePlannerTests.MovingSnapshotFieldsArePreserved),
-    ("fingerprint is invariant under culture", BaselinePlannerTests.FingerprintIsInvariantUnderCulture)
+    ("fingerprint is invariant under culture", BaselinePlannerTests.FingerprintIsInvariantUnderCulture),
+    ("two nearby soft targets become one he group", ClusterPlannerTests.TwoNearbySoftTargetsBecomeOneHeGroup),
+    ("four spread targets choose hche", ClusterPlannerTests.FourSpreadTargetsChooseHche),
+    ("hche rejected when ratio does not beat he", ClusterPlannerTests.HcheRejectedWhenRatioDoesNotBeatHe),
+    ("friendly inside safe radius rejects impact", ClusterPlannerTests.FriendlyInsideSafeRadiusRejectsImpact),
+    ("armored and underground never enter clusters", ClusterPlannerTests.ArmoredAndUndergroundNeverEnterClusters),
+    ("different motion flags never share moving cluster", ClusterPlannerTests.DifferentMotionFlagsNeverShareMovingCluster),
+    ("velocity difference above threshold splits cluster", ClusterPlannerTests.VelocityDifferenceAboveThresholdSplitsCluster),
+    ("first cluster blast reserves covered static member", ClusterPlannerTests.FirstClusterBlastReservesCoveredStaticMember),
+    ("moving cluster records matching covered entities", ClusterPlannerTests.MovingClusterRecordsMatchingCoveredEntities),
+    ("static cluster records unreserved diagnostic members", ClusterPlannerTests.StaticClusterRecordsUnreservedDiagnosticMembers)
 };
 
 var failed = 0;

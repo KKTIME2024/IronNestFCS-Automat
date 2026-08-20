@@ -19,7 +19,7 @@ internal static class SnapshotBuilder
         IReadOnlyList<ShellKind>? immune = null) => new(
             EntityId: id,
             Name: id,
-            Position: position ?? WorldPoint.Zero,
+            Position: position ?? PositionFromBearingDistance(bearingDeg, distanceKm),
             BearingDeg: bearingDeg,
             DistanceKm: distanceKm,
             Priority: priority,
@@ -33,6 +33,13 @@ internal static class SnapshotBuilder
             ImmuneShells: immune ?? Array.Empty<ShellKind>(),
             IsEntityReserved: false,
             IsPositionReserved: false);
+
+    private static WorldPoint PositionFromBearingDistance(float bearingDeg, float distanceKm)
+    {
+        var d = distanceKm / ShellRules.KmPerWorldUnit;
+        var rad = bearingDeg * MathF.PI / 180f;
+        return new WorldPoint(MathF.Sin(rad) * d, MathF.Cos(rad) * d, 0f);
+    }
 
     public static BarrelSnapshot Barrel(
         BarrelId id = BarrelId.Left,

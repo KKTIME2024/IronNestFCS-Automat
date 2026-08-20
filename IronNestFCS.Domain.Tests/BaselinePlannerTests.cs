@@ -51,8 +51,8 @@ internal static class BaselinePlannerTests
     public static void StableBaselineWithCbtDisabledWithholdsFdc()
     {
         var snapshot = SnapshotBuilder.Valid(targets: new[] {
-            SnapshotBuilder.Target("fdc", priority: 6, isFdc: true),
-            SnapshotBuilder.Target("gun", priority: 5)
+            SnapshotBuilder.Target("fdc", priority: 6, isFdc: true, bearingDeg: 90),
+            SnapshotBuilder.Target("gun", priority: 5, bearingDeg: 0)
         });
         AssertEx.Equal("gun", new BaselinePlanner().Plan(snapshot).Groups[0].Shots[0].TargetEntityId);
     }
