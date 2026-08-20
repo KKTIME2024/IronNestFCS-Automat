@@ -1,11 +1,15 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-#
+# 
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IronNestFCS", "IronNestFCS\IronNestFCS.csproj", "{1EF9C3D1-4510-44B6-9611-3E60BA430F38}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IronNestFCS.Abstractions", "IronNestFCS.Abstractions\IronNestFCS.Abstractions.csproj", "{4EBA9D55-99E6-458D-B069-163091555FD0}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IronNestFCS.Logic", "IronNestFCS.Logic\IronNestFCS.Logic.csproj", "{029CEB7C-2D51-494B-8994-CD12CAE74897}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IronNestFCS.Domain", "IronNestFCS.Domain\IronNestFCS.Domain.csproj", "{8603F186-FD51-4339-B93F-70B542A7A991}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IronNestFCS.Domain.Tests", "IronNestFCS.Domain.Tests\IronNestFCS.Domain.Tests.csproj", "{52771B2F-F44C-45F5-AE57-AA17D8A53D92}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -25,5 +29,13 @@ Global
 		{029CEB7C-2D51-494B-8994-CD12CAE74897}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{029CEB7C-2D51-494B-8994-CD12CAE74897}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{029CEB7C-2D51-494B-8994-CD12CAE74897}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8603F186-FD51-4339-B93F-70B542A7A991}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8603F186-FD51-4339-B93F-70B542A7A991}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8603F186-FD51-4339-B93F-70B542A7A991}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8603F186-FD51-4339-B93F-70B542A7A991}.Release|Any CPU.Build.0 = Release|Any CPU
+		{52771B2F-F44C-45F5-AE57-AA17D8A53D92}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{52771B2F-F44C-45F5-AE57-AA17D8A53D92}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{52771B2F-F44C-45F5-AE57-AA17D8A53D92}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{52771B2F-F44C-45F5-AE57-AA17D8A53D92}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

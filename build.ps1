@@ -76,6 +76,7 @@ $buildArguments = @(
     '--nologo'
     '--no-incremental'
     "-p:GameDir=$gameRoot"
+    "-p:ArtifactsDir=$repositoryRoot\artifacts"
 )
 
 Write-Host 'Building IronNestFCS (Release)...' -ForegroundColor Cyan
@@ -93,7 +94,7 @@ try {
         -Source (Join-Path $repositoryRoot 'IronNestFCS\bin\Release\IronNestFCS.dll') `
         -Destination (Join-Path $fcsRoot 'Mods\IronNestFCS.dll')
     Copy-ReleaseArtifact `
-        -Source (Join-Path $gameRoot 'UserData\IronNestFCS\IronNestFCS.Logic.dll') `
+        -Source (Join-Path $repositoryRoot 'artifacts\bin\IronNestFCS.Logic\Release\IronNestFCS.Logic.dll') `
         -Destination (Join-Path $fcsRoot 'UserData\IronNestFCS\IronNestFCS.Logic.dll')
     Copy-ReleaseArtifact `
         -Source (Join-Path $repositoryRoot 'IronNestFCS.Abstractions\bin\Release\IronNestFCS.Abstractions.dll') `

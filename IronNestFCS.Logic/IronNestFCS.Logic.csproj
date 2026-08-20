@@ -7,9 +7,9 @@
         <AssemblyName>IronNestFCS.Logic</AssemblyName>
         <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
         <GameDir>F:\SteamLibrary\steamapps\common\Iron Nest Heavy Turret Simulator</GameDir>
-        <!-- 输出到 MelonEnvironment.UserDataDirectory 实际指向的位置（游戏根目录下的 UserData），
-             与 Host 运行时解析的路径保持一致；改完按 F9 即生效 -->
-        <OutputPath>$(GameDir)\UserData\IronNestFCS\</OutputPath>
+        <!-- 普通构建只写仓库内 artifacts/；部署到游戏目录必须显式运行 deploy.ps1 -->
+        <ArtifactsDir Condition="'$(ArtifactsDir)' == ''">$(MSBuildThisFileDirectory)..\artifacts</ArtifactsDir>
+        <OutputPath>$(ArtifactsDir)\bin\$(MSBuildProjectName)\$(Configuration)\</OutputPath>
     </PropertyGroup>
 
     <ItemGroup>

@@ -40,5 +40,7 @@ Desktop.ini
 tmp/
 release/
 /Release/
+/artifacts/
+/docs/runtime-validation/runs/
 TEMP LOG.txt
 TEMP-ToF.txt
