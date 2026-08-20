@@ -72,6 +72,12 @@ internal static class SnapshotBuilder
         Barrel(BarrelId.Left), Barrel(BarrelId.Right),
         Array.Empty<TargetSnapshot>(), Array.Empty<WorldPoint>(), 0, false);
 
+    public static FireGroup IndependentGroup(string targetId) => new(
+        GroupId: $"group-{targetId}",
+        TriggerMode: TriggerMode.Independent,
+        Shots: new[] { IndependentShot(targetId) },
+        AllowIndependentFallback: false);
+
     public static ShotIntent IndependentShot(string targetId) => new(
         ShotId: $"shot-{targetId}",
         TargetEntityId: targetId,
