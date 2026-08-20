@@ -41,6 +41,8 @@ tmp/
 release/
 /Release/
 /artifacts/
-/docs/runtime-validation/runs/
+# runtime validation run reports are committed evidence; raw logs stay ignored
+/docs/runtime-validation/runs/*.log
+/docs/runtime-validation/runs/raw/
 TEMP LOG.txt
 TEMP-ToF.txt
