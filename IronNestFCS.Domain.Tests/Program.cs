@@ -15,7 +15,18 @@ var tests = new (string Name, Action Run)[]
     ("stale plan is rejected before any group", PlanContractTests.StalePlanIsRejectedBeforeAnyGroup),
     ("same trigger is atomic and unsupported by legacy adapter", PlanContractTests.SameTriggerIsAtomicAndUnsupportedByLegacyAdapter),
     ("single shot gate authorizes only assigned barrel", PlanContractTests.SingleShotGateAuthorizesOnlyAssignedBarrel),
-    ("same trigger gate authorizes both barrels", PlanContractTests.SameTriggerGateAuthorizesBothBarrels)
+    ("same trigger gate authorizes both barrels", PlanContractTests.SameTriggerGateAuthorizesBothBarrels),
+    ("higher priority wins before mechanical cost", BaselinePlannerTests.HigherPriorityWinsBeforeMechanicalCost),
+    ("equal priority uses distance and turret cost", BaselinePlannerTests.EqualPriorityUsesDistanceAndTurretCost),
+    ("shell fallback matches master", BaselinePlannerTests.ShellFallbackMatchesMaster),
+    ("invalid observation creates no plan", BaselinePlannerTests.InvalidObservationCreatesNoPlan),
+    ("pending manual fifo suppresses autonomy", BaselinePlannerTests.PendingManualFifoSuppressesAutonomy),
+    ("stable baseline with cbt disabled withholds fdc", BaselinePlannerTests.StableBaselineWithCbtDisabledWithholdsFdc),
+    ("both barrels busy plans nothing", BaselinePlannerTests.BothBarrelsBusyPlansNothing),
+    ("one barrel busy plans one shot", BaselinePlannerTests.OneBarrelBusyPlansOneShot),
+    ("reserved targets are skipped", BaselinePlannerTests.ReservedTargetsAreSkipped),
+    ("moving snapshot fields are preserved", BaselinePlannerTests.MovingSnapshotFieldsArePreserved),
+    ("fingerprint is invariant under culture", BaselinePlannerTests.FingerprintIsInvariantUnderCulture)
 };
 
 var failed = 0;
