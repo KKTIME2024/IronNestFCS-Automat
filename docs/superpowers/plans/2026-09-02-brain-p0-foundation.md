@@ -147,7 +147,7 @@ Run: `dotnet run --project IronNestFCS.Brain.Tests/IronNestFCS.Brain.Tests.cspro
 
 Record test count, build result, and blockers. Explicitly state that no Unity runtime episode/reset or PPO has been started in this slice.
 
-- [ ] **Step 3: Commit the progress report**
+- [x] **Step 3: Commit the progress report**
 
 ```bash
 git add BRAIN_PROGRESS.md IronNestFCS.sln
