@@ -251,6 +251,7 @@ public sealed class BrainRuntimeCoordinator : IDisposable
             action = new BrainAction(BrainActionKind.Hold);
             if (!session.GetValidActions().Allows(action))
             {
+                session.SupersedePendingDecision();
                 pendingDecisionId = null;
                 return;
             }
