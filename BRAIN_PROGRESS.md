@@ -14,10 +14,13 @@ Updated 2026-09-02. 本阶段继续遵守：Brain 默认关闭；PlayerParity �
 - `ScriptedBaselinePolicy`：继续当前任务；否则选择最新的、非 Lost/DestroyedConfirmed 且可 Engage 的 track；否则 Hold。
 - `BrainRewardAttributionLedger`：通过 `decision_id → mission_id → round_id` 归因 delayed damage/kill/mission/miss/ammo/IronNest damage reward，并拒绝旧 episode callback。
 - `BrainEpisode`：纯逻辑 `Starting → Running → Terminal/Failed → Resetting`，terminal 只接受一次，reset 清理计数、reward 和原因。
+- `BrainResetHarness`：纯逻辑 reset watchdog，严格排序 `RESET_START → OBJECT_TEARDOWN → NEW_MISSION_DETECTED → FSC_REBOUND → KNOWLEDGE_CLEARED → FIRST_OBSERVATION → RESET_SUCCESS`，失败会产生 `RESET_FAILED`，并记录 wall-clock latency。
+- `MissionManagerResetAdapter`：Logic 侧主线程适配器，仅使用生成 API 暴露的 `MissionManager.Instance`、`CurrentPhase`、`CurrentMission`、`CurrentMissionSceneName` 和 `ReloadCurrentMission()`；不把 `MissionGraph` 或实体数据带入 Brain。
+- Named Pipe transport：单请求连接、JSONL、协议版本、malformed/version 错误、断线 Hold fallback；附带 stdlib-only fake Python random client。
 
 ## Tested
 
-- Unit tested：**35/35 Brain tests passed**。
+- Unit tested：**39/39 Brain tests passed**。
 - Corpus output：`scanned=14; tactical=14; fully-parsed=3; partial=4; unsupported=7`。
 - Build tested：`IronNestFCS.Logic` 构建成功，0 errors，21 个既有 warning；Brain test harness 构建成功，0 errors。
 - Game load tested：之前的 marker smoke run 成功加载最新 Logic/Abstractions，并记录 telegram/actuator/reward 三个 opt-in；无 Brain exception。
@@ -48,8 +51,8 @@ Observation: yes (pure DTO + guarded Logic adapters)
 Action: yes (high-level action mask + opt-in FSC bridge)
 Reward: partial (native counter probe + pure attribution ledger; not yet full runtime linkage)
 Terminal: partial (pure episode state; no real mission terminal callback wired)
-Reset: no (pure reset state exists; MissionManager reload harness not wired)
-IPC: no
+Reset: partial (pure coordinator + MissionManager public-API adapter; not runtime-verified or wired into FcsModule loop)
+IPC: yes (pure Named Pipe protocol/server + fake client; game adapter not wired)
 ```
 
 ## Real-game status
@@ -68,11 +71,11 @@ transitions/hour: not measured
 - 无人值守流程还不能可靠地从主菜单通过公开 API 进入固定 mission；当前没有脆弱的屏幕坐标点击实现。
 - Teleprinter hook 已加载但没有在无人值守 smoke 中捕获 completed mission PrintJob。
 - `MissionStatsRuntimeProbe` 只能读公开 counters，尚未沿 FSC 的 mission/round 链路发布完整 runtime reward attribution。
-- 没有自动 reset harness，因此不能诚实地进行 4x/8x 长时间 episode benchmark。
-- Named Pipe/TCP IPC 尚未实现。
+- Reset adapter 尚未在真实 mission reload 中运行验证，也尚未接入 `FcsModule.Update` 的 terminal/reset loop。
+- IPC 目前只验证 pure DTO server/client；尚未把游戏主线程 observation/action/transition 接到 pipe。
 
 ## Next highest-value step
 
-1. 在不依赖 UI 点击的前提下，继续检查/验证 `MissionManager` 的公开 mission-load/reload API；若不存在，保留 blocker。
+1. 将 reset adapter 和 `BrainEpisode` 接入 `FcsModule` 的主线程 terminal/reset 回调；只在公开 mission lifecycle 就绪后清理知识。
 2. 将 `BrainRewardAttributionLedger` 的 IDs 接入现有 `Mission`/`MissionRound` 运行时事件，而不读取敌方实体状态。
-3. 在此基础上实现单一 Named Pipe JSON 协议和 fake Python client；仍先跑 scripted/random policy，不启动 PPO。
+3. 把现有 `BrainFacade` 的纯 DTO 通过 Named Pipe 接入游戏主线程；仍先跑 scripted/random policy，不启动 PPO。

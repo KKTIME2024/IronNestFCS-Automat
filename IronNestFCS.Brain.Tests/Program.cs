@@ -763,6 +763,55 @@ static class BrainIntelTests
         AssertEx.True(server.IsStopped, "server stop must release its worker thread");
     }
 
+    public static void ResetHarnessWaitsForTeardownAndNewMissionBeforeClearing()
+    {
+        var reloadCalls = 0;
+        var rebindCalls = 0;
+        var clearCalls = 0;
+        var harness = new BrainResetHarness(
+            "episode-old",
+            timeoutSeconds: 30.0,
+            requestReload: () => reloadCalls++,
+            rebind: () => rebindCalls++,
+            clearKnowledge: () => clearCalls++);
+
+        AssertEx.True(harness.RequestReset(100.0), "terminal episode should request one reload");
+        AssertEx.Equal(1, reloadCalls, "reload must be requested exactly once");
+        AssertEx.Equal(BrainResetPhase.WaitingForTeardown, harness.Phase,
+            "reset must first wait for old objects to disappear");
+        harness.Tick(101.0, oldObjectsGone: false, newMissionDetected: true);
+        AssertEx.Equal(0, clearCalls, "new mission evidence before teardown must not clear knowledge");
+
+        harness.Tick(102.0, oldObjectsGone: true, newMissionDetected: false);
+        AssertEx.Equal(BrainResetPhase.WaitingForNewMission, harness.Phase,
+            "reset must wait for a new mission after teardown");
+        harness.Tick(103.5, oldObjectsGone: true, newMissionDetected: true);
+
+        AssertEx.Equal(BrainResetPhase.Succeeded, harness.Phase, "reset should succeed after rebind");
+        AssertEx.Equal(1, rebindCalls, "FSC/adapters must rebind once");
+        AssertEx.Equal(1, clearCalls, "knowledge must clear once after new mission detection");
+        AssertEx.True(harness.CurrentEpisodeId != "episode-old", "successful reset must create a new episode id");
+        AssertEx.Near(3.5, harness.ResetLatencySeconds, 1e-12, "reset latency must be wall-clock auditable");
+        AssertEx.Equal("RESET_START", harness.AuditEvents[0].Type, "audit must start with RESET_START");
+        AssertEx.Equal("RESET_SUCCESS", harness.AuditEvents[^1].Type, "audit must end with RESET_SUCCESS");
+    }
+
+    public static void ResetHarnessTimesOutWithoutInfiniteWaiting()
+    {
+        var harness = new BrainResetHarness(
+            "episode-timeout",
+            timeoutSeconds: 5.0,
+            requestReload: () => { },
+            rebind: () => { },
+            clearKnowledge: () => { });
+        harness.RequestReset(10.0);
+        harness.Tick(16.0, oldObjectsGone: false, newMissionDetected: false);
+
+        AssertEx.Equal(BrainResetPhase.Failed, harness.Phase, "reset watchdog must fail after timeout");
+        AssertEx.Equal("RESET_FAILED", harness.AuditEvents[^1].Type, "timeout must be auditable");
+        AssertEx.True(!harness.RequestReset(17.0), "failed reset must not be restarted implicitly");
+    }
+
     private sealed record HiddenEntityFixture(double XKm, double YKm, double Health, string State);
 }
 
@@ -809,6 +858,8 @@ public static class Program
             (nameof(BrainIntelTests.FacadeCreatesDecisionIdsForAttribution), BrainIntelTests.FacadeCreatesDecisionIdsForAttribution),
             (nameof(BrainIntelTests.BrainPipeProtocolRejectsMalformedAndWrongVersion), BrainIntelTests.BrainPipeProtocolRejectsMalformedAndWrongVersion),
             (nameof(BrainIntelTests.BrainPipeServerRoundTripsPingAndStopsCleanly), BrainIntelTests.BrainPipeServerRoundTripsPingAndStopsCleanly),
+            (nameof(BrainIntelTests.ResetHarnessWaitsForTeardownAndNewMissionBeforeClearing), BrainIntelTests.ResetHarnessWaitsForTeardownAndNewMissionBeforeClearing),
+            (nameof(BrainIntelTests.ResetHarnessTimesOutWithoutInfiniteWaiting), BrainIntelTests.ResetHarnessTimesOutWithoutInfiniteWaiting),
         };
 
         foreach (var test in tests)
