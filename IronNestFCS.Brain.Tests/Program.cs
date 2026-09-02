@@ -412,6 +412,25 @@ static class BrainIntelTests
             "only tracks with legal positions should become engageable");
     }
 
+    public static void PlayerParitySessionCanMaskReservedTracks()
+    {
+        var session = new PlayerParityBrainSession(
+            initialGameTimeSeconds: 0.0,
+            initialActionMask: new ActionMask(true, Array.Empty<string>(), false, false),
+            executeAction: _ => new BrainExecutionResult(true, "test sink"));
+
+        session.IngestMapReveal(
+            trackId: "Ship",
+            sourceId: "map-marker:reserved",
+            receivedAtSeconds: 5.0,
+            position: new MapPoint(1.0, 2.0),
+            evidence: "visible marker");
+        session.RefreshEngageableTracks(5.0, new[] { "Ship" });
+
+        AssertEx.True(!session.GetValidActions().Allows(new BrainAction(BrainActionKind.Engage, "Ship")),
+            "a reserved track must be removed from the engage action mask");
+    }
+
     public static void TransitionPublishesRewardAndTerminalState()
     {
         var observation = new BrainObservation(
@@ -463,6 +482,7 @@ public static class Program
             (nameof(BrainIntelTests.FacadeMasksBeforeCallingActuator), BrainIntelTests.FacadeMasksBeforeCallingActuator),
             (nameof(BrainIntelTests.PlayerParitySessionIngestsTelegramAndResetsKnowledge), BrainIntelTests.PlayerParitySessionIngestsTelegramAndResetsKnowledge),
             (nameof(BrainIntelTests.PlayerParitySessionAcceptsExplicitMapRevealPosition), BrainIntelTests.PlayerParitySessionAcceptsExplicitMapRevealPosition),
+            (nameof(BrainIntelTests.PlayerParitySessionCanMaskReservedTracks), BrainIntelTests.PlayerParitySessionCanMaskReservedTracks),
             (nameof(BrainIntelTests.TransitionPublishesRewardAndTerminalState), BrainIntelTests.TransitionPublishesRewardAndTerminalState),
         };
 

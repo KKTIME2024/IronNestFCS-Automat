@@ -120,11 +120,17 @@ public sealed class PlayerParityBrainSession : IBrainFacade
     /// the observation but cannot become an Engage action until a legal map
     /// reveal supplies a position.
     /// </summary>
-    public void RefreshEngageableTracks(double? gameTimeSeconds = null)
+    public void RefreshEngageableTracks(
+        double? gameTimeSeconds = null,
+        IEnumerable<string>? excludedTrackIds = null)
     {
+        var excluded = excludedTrackIds == null
+            ? null
+            : new HashSet<string>(excludedTrackIds, StringComparer.Ordinal);
         var engageable = Knowledge.Snapshot()
             .Where(x => x.ReportedPosition.HasValue
-                && !x.TrackId.StartsWith("route:", StringComparison.Ordinal))
+                && !x.TrackId.StartsWith("route:", StringComparison.Ordinal)
+                && (excluded == null || !excluded.Contains(x.TrackId)))
             .Select(x => x.TrackId);
         var mask = new ActionMask(
             currentActionMask.HoldAllowed,

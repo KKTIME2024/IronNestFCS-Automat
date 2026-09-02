@@ -31,6 +31,34 @@ public sealed class PlayerParityMapGridAdapter
     }
 
     /// <summary>
+    /// Converts a previously accepted player-visible map point back to world
+    /// space. The point must have been produced from this map's public scale;
+    /// this method never looks up an entity at that position.
+    /// </summary>
+    public bool TryMapPointToWorld(MapPoint mapPositionKm, out Vector3 worldPosition)
+    {
+        worldPosition = default;
+        if (!EnsureMapGeometry() || coordinateRoot == null || distanceToKmScale <= 0f)
+            return false;
+
+        try
+        {
+            var local = new Vector3(
+                (float)(mapPositionKm.XKm / distanceToKmScale),
+                (float)(mapPositionKm.YKm / distanceToKmScale),
+                0f);
+            worldPosition = coordinateRoot.TransformPoint(local);
+            return true;
+        }
+        catch (Exception)
+        {
+            fireMission = null;
+            coordinateRoot = null;
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Resolve the same visible grid designation into the game's world space.
     /// This is for the future high-level actuator only; it still starts from a
     /// printed grid and public map geometry, never from an entity transform.
