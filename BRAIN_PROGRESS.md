@@ -22,6 +22,7 @@ Updated 2026-09-02. This is the first implementation slice; no PPO or ML runtime
 - Pure Brain harness: **22/22 tests passed**.
 - Logic build with an output override: **0 errors, 21 existing warnings**.
 - Runtime smoke check: game loaded the deployed Logic/Abstractions assemblies and logged `[Brain] player-parity telegram capture enabled (job-complete timing)` with no `TypeLoadException`. The old hard-coded `<RunQueue>d__91` assumption was replaced after the live runtime exposed `<RunQueue>d__98`.
+- A follow-up launch with telegram/actuator/reward switches set exited with process code `53` and produced an empty newest bootstrap log; this is recorded as inconclusive, not as evidence that the new reward probe ran.
 - The test project is now included in `IronNestFCS.sln`.
 
 ## Not yet measured / not yet implemented
