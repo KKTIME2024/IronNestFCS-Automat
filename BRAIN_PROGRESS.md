@@ -17,7 +17,7 @@ Updated 2026-09-02. This is the first implementation slice; no PPO or ML runtime
 
 ## Verification
 
-- Pure Brain harness: **20/20 tests passed**.
+- Pure Brain harness: **21/21 tests passed**.
 - Logic build with an output override: **0 errors, 21 existing warnings**.
 - Runtime smoke check: game loaded the deployed Logic/Abstractions assemblies and logged `[Brain] player-parity telegram capture enabled (job-complete timing)` with no `TypeLoadException`. The old hard-coded `<RunQueue>d__91` assumption was replaced after the live runtime exposed `<RunQueue>d__98`.
 - The test project is now included in `IronNestFCS.sln`.

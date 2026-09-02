@@ -34,11 +34,11 @@ public static class TelegramSemanticParser
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex WaypointRegex = new(
-        @"\[POINT\s+(?:[<{])?(?<id>WP[A-Z]|Waypoint-[A-Za-z0-9-]+)(?:[>}]?)\].*?(?<distance>\d+(?:[.,]\d+)?)\s*km.*?\bT\s*=\s*(?<time>\d{1,2}:\d{2}:\d{2})",
+        @"\[POINT\s+(?:[<{])?(?<id>WP[A-Z]|Waypoint-[A-Za-z0-9-]+)(?:[>}]?)\].*?(?<distance>\d+(?:[.,]\d+)?)\s*km.*?\bT\s*[:=]\s*(?<time>\d{1,2}:\d{2}:\d{2})",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex ArrivalRegex = new(
-        @"(?im)^\s*(?:estimated\s+)?(?:arrival|到达|抵达|到站)\s*[:：]?[^\r\n]*?\bT\s*=\s*(?<time>\d{1,2}:\d{2}:\d{2})",
+        @"(?im)^\s*(?:estimated\s+)?(?:arrival|到达|抵达|到站)\s*[:：]?[^\r\n]*?(?:\bT\s*[:=]\s*)?(?<time>\d{1,2}:\d{2}:\d{2})",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex FutureEventRegex = new(

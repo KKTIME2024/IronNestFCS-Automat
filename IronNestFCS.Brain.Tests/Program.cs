@@ -181,6 +181,23 @@ static class BrainIntelTests
         AssertEx.True(track.Motion == null, "route timing alone must not be labelled as vessel speed");
     }
 
+    public static void RouteTelegramAcceptsColonAndBareArrivalClock()
+    {
+        var text = string.Join("\n", new[]
+        {
+            "TRAIN SCHEDULE",
+            "[POINT Train] APPROACH:",
+            "[POINT WPA] - 3.00km from station: T:10:06:50",
+            "Arrival 10:16:50",
+        });
+
+        var track = TelegramSemanticParser.Parse("hq:iron-road-colon", 10.0, text).Tracks.Single();
+        AssertEx.Equal(10 * 3600.0 + 6 * 60.0 + 50.0, track.Route.Single().PassageTimeSeconds,
+            "waypoint parser must accept T: clock notation");
+        AssertEx.Equal(10 * 3600.0 + 16 * 60.0 + 50.0, track.EstimatedArrivalSeconds,
+            "arrival parser must accept a bare visible clock");
+    }
+
     public static void ChineseVesselTelegramParsesVisibleCourseAndSpeed()
     {
         var text = string.Join("\n", new[]
@@ -434,6 +451,7 @@ public static class Program
             (nameof(BrainIntelTests.MissingMotionTextDoesNotCreateVelocity), BrainIntelTests.MissingMotionTextDoesNotCreateVelocity),
             (nameof(BrainIntelTests.HighTideTelegramPreservesFutureInterceptTime), BrainIntelTests.HighTideTelegramPreservesFutureInterceptTime),
             (nameof(BrainIntelTests.RouteTelegramCapturesRailBearingWithoutInventingSpeed), BrainIntelTests.RouteTelegramCapturesRailBearingWithoutInventingSpeed),
+            (nameof(BrainIntelTests.RouteTelegramAcceptsColonAndBareArrivalClock), BrainIntelTests.RouteTelegramAcceptsColonAndBareArrivalClock),
             (nameof(BrainIntelTests.ChineseVesselTelegramParsesVisibleCourseAndSpeed), BrainIntelTests.ChineseVesselTelegramParsesVisibleCourseAndSpeed),
             (nameof(BrainIntelTests.ChineseHighTideTelegramPreservesFutureTime), BrainIntelTests.ChineseHighTideTelegramPreservesFutureTime),
             (nameof(BrainIntelTests.UnresolvedLocalizationTemplateIsNotTreatedAsIntel), BrainIntelTests.UnresolvedLocalizationTemplateIsNotTreatedAsIntel),
