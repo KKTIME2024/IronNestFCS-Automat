@@ -65,7 +65,8 @@ public static class TelegramSemanticParser
         var route = ParseRoute(visibleText);
         var arrival = ParseArrival(visibleText) ?? ParseFutureEvent(visibleText);
         var bearing = ParseBearing(visibleText);
-        var reportedDistance = motion != null ? ParseDistance(visibleText) : null;
+        var reportedDistance = ParseDistance(visibleText);
+        var unsupported = DetectUnsupportedSemantics(visibleText);
 
         // POINT is overloaded by the mission text: stations and route waypoints
         // are visible map context, not the moving unit. Prefer an explicit unit
@@ -78,7 +79,10 @@ public static class TelegramSemanticParser
         if (string.IsNullOrWhiteSpace(trackId)
             && route.Count == 0
             && arrival is null)
-            return new TelegramSemanticEvent(sourceId, receivedAtSeconds, Array.Empty<TrackIntel>(), visibleText);
+            return new TelegramSemanticEvent(sourceId, receivedAtSeconds, Array.Empty<TrackIntel>(), visibleText)
+            {
+                UnsupportedSemantics = unsupported,
+            };
         trackId ??= $"route:{sourceId}";
 
         var track = new TrackIntel(trackId, provenance)
@@ -97,7 +101,10 @@ public static class TelegramSemanticParser
             sourceId,
             receivedAtSeconds,
             new[] { track },
-            visibleText);
+            visibleText)
+        {
+            UnsupportedSemantics = unsupported,
+        };
     }
 
     private static MotionIntel? ParseMotion(string text)
@@ -172,6 +179,53 @@ public static class TelegramSemanticParser
         }
 
         return null;
+    }
+
+    private static IReadOnlyList<UnsupportedSemantic> DetectUnsupportedSemantics(string text)
+    {
+        var found = new List<UnsupportedSemantic>();
+        AddIf(found, "unresolved-template", text,
+            text.Contains("<{", StringComparison.Ordinal)
+                || text.Contains("<MissionTime", StringComparison.OrdinalIgnoreCase),
+            "localisation placeholder was not resolved to player-visible text");
+        AddIf(found, "target-role", text,
+            ContainsAny(text, "armoured", "armored", "emplacement", "reinforcement", "marines", "locomotive", "fdc"),
+            "target class/role is visible but has no trusted structured field yet");
+        AddIf(found, "shell-recommendation", text,
+            ContainsAny(text, "ap shell", "he shell", "dril", "shells to destroy", "ordnance"),
+            "visible ammunition guidance is not yet represented in TrackIntel");
+        AddIf(found, "damage-confirmation", text,
+            ContainsAny(text, "destroyed", "direct hit", "rounds on target", "taking heavy fire", "stopped responding", "derailed", "crippled", "landed at"),
+            "damage/destruction is not inferred into a target state from free text");
+        AddIf(found, "scouting", text,
+            ContainsAny(text, "scout", "reconnaissance", "overflight", "observation assets", "illumination"),
+            "scouting/observation status has no structured observation field yet");
+        AddIf(found, "counter-battery", text,
+            ContainsAny(text, "counter-battery", "counter battery", "counterbattery"),
+            "counter-battery warning is not yet represented as a threat event");
+        AddIf(found, "mission-urgency", text,
+            ContainsAny(text, "priority", "intercept before", "must hold", "first contact", "stand down", "optional", "mission failed", "primary objective"),
+            "priority/urgency is visible but has no structured mission objective field yet");
+        AddIf(found, "task-order", text,
+            Regex.IsMatch(text, @"\b(?:destroy|focus fire|commence assault)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant),
+            "imperative task wording is retained as text until a mission-objective schema exists");
+        return found;
+    }
+
+    private static bool ContainsAny(string text, params string[] needles)
+    {
+        return needles.Any(needle => text.Contains(needle, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static void AddIf(
+        ICollection<UnsupportedSemantic> destination,
+        string category,
+        string evidence,
+        bool condition,
+        string reason)
+    {
+        if (condition)
+            destination.Add(new UnsupportedSemantic(category, evidence, reason));
     }
 
     private static double ParseClock(string value)

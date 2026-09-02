@@ -38,6 +38,13 @@ public readonly record struct MapPoint(double XKm, double YKm);
 /// <summary>电报或合法侦察明确给出的恒定航向运动事实。</summary>
 public sealed record MotionIntel(double CourseDegrees, double SpeedKmPerSecond);
 
+/// <summary>
+/// A visible semantic category that the current parser deliberately does not
+/// turn into a trusted structured fact. The original text is retained so a
+/// later parser extension can be audited against the exact evidence.
+/// </summary>
+public sealed record UnsupportedSemantic(string Category, string Evidence, string Reason);
+
 /// <summary>路线情报中的一个路标。</summary>
 public sealed record RouteWaypointIntel(
     string WaypointId,
@@ -78,6 +85,9 @@ public sealed record TelegramSemanticEvent(
     IReadOnlyList<TrackIntel> Tracks,
     string VisibleText)
 {
+    public IReadOnlyList<UnsupportedSemantic> UnsupportedSemantics { get; init; }
+        = Array.Empty<UnsupportedSemantic>();
+
     public IntelProvenance Provenance => new(
         IntelSourceKind.Telegram,
         SourceId,

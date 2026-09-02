@@ -482,6 +482,31 @@ static class BrainIntelTests
         AssertEx.True(hiddenEnemy.Health == 0.0, "fixture mutation must actually occur");
     }
 
+    public static void UnsupportedTelegramSemanticRetainsRawEvidence()
+    {
+        var visible = "[POINT Pillbox1] requires AP Shells. Counter-battery fire will commence.";
+        var message = TelegramSemanticParser.Parse("hq:unsupported", 30.0, visible);
+
+        AssertEx.True(message.UnsupportedSemantics.Count >= 2,
+            "unimplemented shell/counter-battery semantics must be explicit");
+        AssertEx.True(message.UnsupportedSemantics.All(x => x.Evidence == visible),
+            "unsupported facts must retain the exact visible evidence");
+    }
+
+    public static void TelegramCorpusReportsCoverageWithoutGuessing()
+    {
+        var report = TelegramCorpus.Analyze();
+
+        AssertEx.Equal(14, report.MessagesScanned, "corpus size must be deterministic");
+        AssertEx.True(report.MessagesWithTacticalSemantics >= 12,
+            "all tactical fixtures should be counted even when not fully parsed");
+        AssertEx.True(report.FullyParsed >= 3, "basic position/motion fixtures should be fully parsed");
+        AssertEx.True(report.PartiallyParsed >= 3, "mixed tactical messages should be partial");
+        AssertEx.True(report.Unsupported >= 1, "unsupported-only messages must remain visible in coverage");
+        AssertEx.Equal(report.MessagesScanned, report.FullyParsed + report.PartiallyParsed + report.Unsupported,
+            "coverage buckets must partition the scanned corpus");
+    }
+
     private sealed record HiddenEntityFixture(double XKm, double YKm, double Health, string State);
 }
 
@@ -514,6 +539,8 @@ public static class Program
             (nameof(BrainIntelTests.PlayerParitySessionCanMaskReservedTracks), BrainIntelTests.PlayerParitySessionCanMaskReservedTracks),
             (nameof(BrainIntelTests.TransitionPublishesRewardAndTerminalState), BrainIntelTests.TransitionPublishesRewardAndTerminalState),
             (nameof(BrainIntelTests.HiddenEntityMutationCannotChangePlayerParityObservation), BrainIntelTests.HiddenEntityMutationCannotChangePlayerParityObservation),
+            (nameof(BrainIntelTests.UnsupportedTelegramSemanticRetainsRawEvidence), BrainIntelTests.UnsupportedTelegramSemanticRetainsRawEvidence),
+            (nameof(BrainIntelTests.TelegramCorpusReportsCoverageWithoutGuessing), BrainIntelTests.TelegramCorpusReportsCoverageWithoutGuessing),
         };
 
         foreach (var test in tests)
@@ -523,5 +550,6 @@ public static class Program
         }
 
         Console.WriteLine($"PASS {tests.Length} tests");
+        Console.WriteLine($"TELEGRAM_COVERAGE {TelegramCorpus.Analyze().ToSummary()}");
     }
 }
