@@ -5,7 +5,7 @@ Updated 2026-09-02. This is the first implementation slice; no PPO or ML runtime
 ## Completed in this slice
 
 - Added a Unity/IL2CPP-free `PlayerParityKnowledge` model with provenance checks.
-- Added text-only telegram parsing for visible grid/time/course/speed, route waypoint/bearing facts, and explicit future intercept times. The parser also handles the extracted Chinese motion phrasing.
+- Added text-only telegram parsing for visible grid/time/course/speed, explicit distance (including the future `5KM`/`5千米` intercept line), route waypoint/bearing facts, and future intercept times. The parser also handles the extracted Chinese motion phrasing.
 - Added constant-course extrapolation with age-based uncertainty. It uses only the last legal report; it does not refresh from `FireMission.Entities` or `TacticalRadar`.
 - Added future-time projection (`TryEstimateAt`) so a policy can predict at fire-time + shell-flight-time, plus semantic `BrainAction`, strict `ActionMask`, `BrainObservation`, `BrainTransition`, and `BrainFacade` contracts.
 - Added `PlayerParityBrainSession`, which ingests visible telegram text, refreshes observations, and clears knowledge on episode reset.

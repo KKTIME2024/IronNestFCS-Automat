@@ -158,6 +158,8 @@ static class BrainIntelTests
         AssertEx.True(track.Motion != null, "high tide course/speed must be parsed");
         AssertEx.Equal(180.0, track.Motion!.CourseDegrees, "high tide course must be retained");
         AssertEx.Near(19.4 * 1.852 / 3600.0, track.Motion.SpeedKmPerSecond, 1e-12, "knots must convert");
+        AssertEx.Equal(5.0, track.ReportedDistanceKm,
+            "the explicit future intercept distance must remain available");
         AssertEx.Equal(10 * 3600.0 + 8 * 60.0 + 20.0, track.EstimatedArrivalSeconds,
             "future intercept time must remain available to a high-level planner");
     }
@@ -212,6 +214,8 @@ static class BrainIntelTests
         AssertEx.Equal(10 * 3600.0 + 8 * 60.0 + 20.0,
             message.Tracks.Single().EstimatedArrivalSeconds,
             "Chinese future landing time must remain available");
+        AssertEx.Equal(5.0, message.Tracks.Single().ReportedDistanceKm,
+            "Chinese future landing distance must remain available");
     }
 
     public static void UnresolvedLocalizationTemplateIsNotTreatedAsIntel()

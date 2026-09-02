@@ -60,6 +60,8 @@ public sealed record TrackIntel
     public string? DisplayName { get; init; }
     public string? ReportedGrid { get; init; }
     public MapPoint? ReportedPosition { get; init; }
+    /// <summary>电报明确打印的距离（例如未来拦截行的 5KM）。</summary>
+    public double? ReportedDistanceKm { get; init; }
     /// <summary>显式的路线/航向方位；不是从隐藏实体速度反推的字段。</summary>
     public double? ReportedBearingDegrees { get; init; }
     public double? ReportedAtSeconds { get; init; }
@@ -92,6 +94,7 @@ public sealed record TrackSnapshot
         string? displayName,
         string? reportedGrid,
         MapPoint? reportedPosition,
+        double? reportedDistanceKm,
         double? reportedAtSeconds,
         MotionIntel? motion,
         IReadOnlyList<RouteWaypointIntel> route,
@@ -103,6 +106,7 @@ public sealed record TrackSnapshot
         DisplayName = displayName;
         ReportedGrid = reportedGrid;
         ReportedPosition = reportedPosition;
+        ReportedDistanceKm = reportedDistanceKm;
         ReportedAtSeconds = reportedAtSeconds;
         Motion = motion;
         Route = route;
@@ -115,6 +119,7 @@ public sealed record TrackSnapshot
     public string? DisplayName { get; }
     public string? ReportedGrid { get; }
     public MapPoint? ReportedPosition { get; }
+    public double? ReportedDistanceKm { get; }
     public double? ReportedBearingDegrees { get; init; }
     public double? ReportedAtSeconds { get; }
     public IntelTimeBasis ReportedTimeBasis { get; init; }

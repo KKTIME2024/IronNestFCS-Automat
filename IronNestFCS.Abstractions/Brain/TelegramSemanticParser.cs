@@ -29,6 +29,10 @@ public static class TelegramSemanticParser
         @"(?:\bbearing\b|\bazimuth\b|\bpeilung\b|方位角)\s*(?:is\s*)?(?<bearing>\d+(?:[.,]\d+)?)\s*[°º]",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
+    private static readonly Regex DistanceRegex = new(
+        @"(?<![\w.])(?<distance>\d+(?:[.,]\d+)?)\s*(?:km\b|公里|千米)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
     private static readonly Regex WaypointRegex = new(
         @"\[POINT\s+(?:[<{])?(?<id>WP[A-Z]|Waypoint-[A-Za-z0-9-]+)(?:[>}]?)\].*?(?<distance>\d+(?:[.,]\d+)?)\s*km.*?\bT\s*=\s*(?<time>\d{1,2}:\d{2}:\d{2})",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -61,6 +65,7 @@ public static class TelegramSemanticParser
         var route = ParseRoute(visibleText);
         var arrival = ParseArrival(visibleText) ?? ParseFutureEvent(visibleText);
         var bearing = ParseBearing(visibleText);
+        var reportedDistance = motion != null ? ParseDistance(visibleText) : null;
 
         // POINT is overloaded by the mission text: stations and route waypoints
         // are visible map context, not the moving unit. Prefer an explicit unit
@@ -79,6 +84,7 @@ public static class TelegramSemanticParser
         var track = new TrackIntel(trackId, provenance)
         {
             ReportedGrid = grid.Success ? Clean(grid.Groups["grid"].Value) : null,
+            ReportedDistanceKm = reportedDistance,
             ReportedBearingDegrees = bearing,
             ReportedAtSeconds = clock.Success ? ParseClock(clock.Groups["time"].Value) : null,
             ReportedTimeBasis = clock.Success ? IntelTimeBasis.ClockOfDaySeconds : IntelTimeBasis.Unknown,
@@ -151,6 +157,21 @@ public static class TelegramSemanticParser
         return match.Success && TryParseNumber(match.Groups["bearing"].Value, out var bearing)
             ? NormalizeDegrees(bearing)
             : null;
+    }
+
+    private static double? ParseDistance(string text)
+    {
+        // Prefer the last explicit distance: moving-vessel telegrams commonly
+        // end with the future intercept line (for example "5KM ...").
+        var matches = DistanceRegex.Matches(text);
+        for (var i = matches.Count - 1; i >= 0; i--)
+        {
+            if (TryParseNumber(matches[i].Groups["distance"].Value, out var distance)
+                && distance >= 0.0)
+                return distance;
+        }
+
+        return null;
     }
 
     private static double ParseClock(string value)
