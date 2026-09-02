@@ -77,6 +77,15 @@ reset success: 0
 transitions/hour: not measured
 ```
 
+## Working-tree boundary
+
+`8fe7065 feat(brain): harden runtime bring-up` contains the isolated Brain
+contracts/coordinator, reset/generation tests, in-process policy, host,
+transport client, and this progress/plan documentation. `FcsModule.cs` still
+contains the runtime wiring in the same dirty hunks as earlier user work, so it
+was deliberately not force-split or committed. The other dirty planner/FSC,
+documentation, and archive paths were not reset, restored, or overwritten.
+
 ## Blockers
 
 - 无人值守流程仍不能从主菜单通过公开 API 进入固定 mission；本轮明确把“手动进入一次任务”作为启动前提。
