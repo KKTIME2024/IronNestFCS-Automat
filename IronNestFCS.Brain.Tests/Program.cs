@@ -638,6 +638,86 @@ static class BrainIntelTests
         AssertEx.Equal(0, facade.DrainEvents().Count, "drained events must not be repeated");
     }
 
+    public static void RewardLedgerAttributesDelayedImpactToDecisionChain()
+    {
+        var ledger = new BrainRewardAttributionLedger();
+        ledger.StartEpisode("episode-1");
+        AssertEx.True(ledger.Apply(new BrainGameEvent(
+            BrainEventType.BrainDecision, "episode-1", 10.0, "decision-1", "mission-1", "round-1")),
+            "decision must establish the attribution chain");
+        AssertEx.True(ledger.Apply(new BrainGameEvent(
+            BrainEventType.MissionCreated, "episode-1", 10.1, "decision-1", "mission-1", "round-1")),
+            "mission creation must bind mission to decision");
+        AssertEx.True(ledger.Apply(new BrainGameEvent(
+            BrainEventType.TargetDamaged, "episode-1", 31.0, null, "mission-1", "round-1", Amount: 2.0)),
+            "delayed damage event must resolve through mission id");
+        AssertEx.True(ledger.Apply(new BrainGameEvent(
+            BrainEventType.TargetDestroyed, "episode-1", 32.0, null, "mission-1", "round-1", Amount: 5.0)),
+            "delayed kill event must resolve through mission id");
+        AssertEx.True(ledger.Apply(new BrainGameEvent(
+            BrainEventType.MissionCompleted, "episode-1", 33.0, null, "mission-1", "round-1", Amount: 3.0)),
+            "mission completion must resolve through mission id");
+
+        var reward = ledger.GetReward("decision-1");
+        AssertEx.Equal(2.0, reward.DamageReward, "damage reward must remain a separate component");
+        AssertEx.Equal(5.0, reward.TargetDestroyedReward, "kill reward must remain a separate component");
+        AssertEx.Equal(3.0, reward.MissionSuccessReward, "mission reward must remain a separate component");
+        AssertEx.Equal(10.0, reward.Total, "delayed rewards must aggregate on the originating decision");
+    }
+
+    public static void RewardLedgerRejectsOldEpisodeEventsAfterReset()
+    {
+        var ledger = new BrainRewardAttributionLedger();
+        ledger.StartEpisode("episode-old");
+        ledger.Apply(new BrainGameEvent(
+            BrainEventType.BrainDecision, "episode-old", 1.0, "old-decision", "old-mission", "old-round"));
+        ledger.StartEpisode("episode-new");
+
+        AssertEx.True(!ledger.Apply(new BrainGameEvent(
+            BrainEventType.TargetDamaged, "episode-old", 20.0, null, "old-mission", "old-round", Amount: 99.0)),
+            "a callback from a prior episode must be rejected");
+        AssertEx.Equal(0.0, ledger.GetReward("old-decision").Total,
+            "old episode reward must not leak into the new ledger");
+    }
+
+    public static void EpisodeStateMachineTerminatesOnceAndClearsOnReset()
+    {
+        var episode = new BrainEpisode("episode-1", seed: 7, startGameTimeSeconds: 10.0);
+        AssertEx.Equal(EpisodeState.Starting, episode.State, "new episode must start in Starting state");
+        AssertEx.True(episode.MarkInitialObservation(), "initial observation should enter Running");
+        AssertEx.True(episode.RegisterDecision(), "running episode should count decisions");
+        AssertEx.True(episode.TryTerminate("mission-complete"), "first terminal event should close episode");
+        AssertEx.True(!episode.TryTerminate("duplicate-terminal"), "terminal event must be emitted only once");
+        AssertEx.Equal(EpisodeState.Terminal, episode.State, "episode must remain terminal until reset");
+        AssertEx.True(episode.BeginReset(), "terminal episode should enter Resetting");
+        AssertEx.True(!episode.AcceptsCallback("episode-1"), "old callbacks must be rejected during reset");
+        episode.CompleteReset("episode-2", startGameTimeSeconds: 100.0);
+        AssertEx.Equal(EpisodeState.Starting, episode.State, "reset should start the new episode");
+        AssertEx.Equal(0, episode.DecisionCount, "reset must clear old decisions");
+        AssertEx.True(!episode.AcceptsCallback("episode-1"), "old episode id must remain invalid after reset");
+        AssertEx.True(episode.AcceptsCallback("episode-2"), "new episode id must be accepted");
+    }
+
+    public static void FacadeCreatesDecisionIdsForAttribution()
+    {
+        var observation = new BrainObservation(0.0, Array.Empty<TrackSnapshot>(), new ActionMask(true, Array.Empty<string>(), false, false));
+        var facade = new BrainFacade(
+            observation,
+            _ => new BrainExecutionResult(true, "accepted"),
+            episodeId: "episode-1");
+        facade.SubmitDecision(new BrainAction(BrainActionKind.Hold));
+
+        AssertEx.True(!string.IsNullOrWhiteSpace(facade.LastTransition!.DecisionId),
+            "every submitted decision must have a stable id");
+        AssertEx.Equal("episode-1", facade.LastTransition.EpisodeId,
+            "decision transition must carry its episode id");
+        var decisionEvent = facade.DrainEvents().Single(x => x.Type == "decision");
+        AssertEx.Equal(facade.LastTransition.DecisionId, decisionEvent.DecisionId,
+            "decision event and transition must share the same id");
+        AssertEx.True(decisionEvent.MissionId == null,
+            "a high-level Hold decision must not masquerade as a mission id");
+    }
+
     private sealed record HiddenEntityFixture(double XKm, double YKm, double Health, string State);
 }
 
@@ -678,6 +758,10 @@ public static class Program
             (nameof(BrainIntelTests.RandomLegalPolicyNeverChoosesMaskedActions), BrainIntelTests.RandomLegalPolicyNeverChoosesMaskedActions),
             (nameof(BrainIntelTests.ScriptedBaselinePolicyPrefersFreshKnownTarget), BrainIntelTests.ScriptedBaselinePolicyPrefersFreshKnownTarget),
             (nameof(BrainIntelTests.FacadeDrainsEventsAndExposesEpisodeState), BrainIntelTests.FacadeDrainsEventsAndExposesEpisodeState),
+            (nameof(BrainIntelTests.RewardLedgerAttributesDelayedImpactToDecisionChain), BrainIntelTests.RewardLedgerAttributesDelayedImpactToDecisionChain),
+            (nameof(BrainIntelTests.RewardLedgerRejectsOldEpisodeEventsAfterReset), BrainIntelTests.RewardLedgerRejectsOldEpisodeEventsAfterReset),
+            (nameof(BrainIntelTests.EpisodeStateMachineTerminatesOnceAndClearsOnReset), BrainIntelTests.EpisodeStateMachineTerminatesOnceAndClearsOnReset),
+            (nameof(BrainIntelTests.FacadeCreatesDecisionIdsForAttribution), BrainIntelTests.FacadeCreatesDecisionIdsForAttribution),
         };
 
         foreach (var test in tests)

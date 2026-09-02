@@ -9,16 +9,23 @@ public sealed class BrainFacade : IBrainFacade
     private readonly Func<BrainAction, BrainExecutionResult> executeAction;
     private readonly List<BrainTransition> transitionHistory = new();
     private readonly List<BrainEvent> pendingEvents = new();
+    private readonly string episodeBaseId;
     private BrainObservation observation;
     private bool terminal;
     private EpisodeState episodeState = EpisodeState.Running;
+    private int episodeSequence;
+    private long decisionSequence;
+    private string episodeId;
 
     public BrainFacade(
         BrainObservation initialObservation,
-        Func<BrainAction, BrainExecutionResult> executeAction)
+        Func<BrainAction, BrainExecutionResult> executeAction,
+        string? episodeId = null)
     {
         observation = initialObservation ?? throw new ArgumentNullException(nameof(initialObservation));
         this.executeAction = executeAction ?? throw new ArgumentNullException(nameof(executeAction));
+        this.episodeBaseId = string.IsNullOrWhiteSpace(episodeId) ? "episode" : episodeId;
+        this.episodeId = this.episodeBaseId;
     }
 
     public BrainObservation GetObservation() => observation;
@@ -30,6 +37,8 @@ public sealed class BrainFacade : IBrainFacade
     public bool IsTerminal => terminal;
 
     public EpisodeState EpisodeState => episodeState;
+
+    public string EpisodeId => episodeId;
 
     public BrainExecutionResult SubmitDecision(BrainAction action)
     {
@@ -49,6 +58,7 @@ public sealed class BrainFacade : IBrainFacade
             result = executeAction(action);
         }
 
+        var decisionId = $"{episodeId}:decision:{++decisionSequence}";
         var transition = new BrainTransition(
             observation,
             action,
@@ -56,19 +66,24 @@ public sealed class BrainFacade : IBrainFacade
             Array.Empty<string>(),
             new RewardBreakdown(),
             null,
-            terminal);
+            terminal)
+        {
+            EpisodeId = episodeId,
+            DecisionId = decisionId,
+        };
         LastTransition = transition;
         transitionHistory.Add(transition);
         EnqueueEvent(new BrainEvent(
             "decision",
             observation.GameTimeSeconds,
+            decisionId,
             null,
-            action.TrackId,
             null,
             new Dictionary<string, string>
             {
                 ["action"] = action.Kind.ToString(),
                 ["accepted"] = result.Accepted.ToString(),
+                ["track_id"] = action.TrackId ?? string.Empty,
             }));
         return result;
     }
@@ -125,6 +140,9 @@ public sealed class BrainFacade : IBrainFacade
     {
         terminal = false;
         episodeState = EpisodeState.Running;
+        episodeSequence++;
+        decisionSequence = 0;
+        episodeId = $"{episodeBaseId}:reset:{episodeSequence}";
         LastTransition = null;
         transitionHistory.Clear();
         pendingEvents.Clear();

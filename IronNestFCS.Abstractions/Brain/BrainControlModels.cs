@@ -123,7 +123,11 @@ public sealed record BrainTransition(
     IReadOnlyList<string> GameEvents,
     RewardBreakdown Reward,
     BrainObservation? NextObservation,
-    bool Terminal);
+    bool Terminal)
+{
+    public string? EpisodeId { get; init; }
+    public string? DecisionId { get; init; }
+};
 
 /// <summary>
 /// Logic 层后续实现的窄 facade。接口不泄漏炮塔、IL2CPP 或 FCS 私有类型。
