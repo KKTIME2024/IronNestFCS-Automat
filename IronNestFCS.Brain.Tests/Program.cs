@@ -584,6 +584,60 @@ static class BrainIntelTests
             "unknown track lifecycle must not be invented");
     }
 
+    public static void RandomLegalPolicyNeverChoosesMaskedActions()
+    {
+        var observation = new BrainObservation(10.0, Array.Empty<TrackSnapshot>(), new ActionMask(
+            holdAllowed: true,
+            engageableTrackIds: new[] { "Ship" },
+            continueCurrentMissionAllowed: false,
+            abortIfSafeAllowed: false));
+        var policy = new RandomLegalPolicy(new Random(42));
+
+        for (var i = 0; i < 50; i++)
+        {
+            var action = policy.Choose(observation);
+            AssertEx.True(observation.ActionMask.Allows(action),
+                "random policy must sample only actions permitted by the mask");
+        }
+    }
+
+    public static void ScriptedBaselinePolicyPrefersFreshKnownTarget()
+    {
+        var knowledge = new PlayerParityKnowledge();
+        knowledge.Apply(new TrackIntel(
+            "Old-Ship",
+            new IntelProvenance(IntelSourceKind.MapReveal, "map:old", 10.0, "old marker"))
+        {
+            ReportedPosition = new MapPoint(1.0, 1.0),
+        });
+        knowledge.Apply(new TrackIntel(
+            "Fresh-Ship",
+            new IntelProvenance(IntelSourceKind.MapReveal, "map:fresh", 95.0, "fresh marker"))
+        {
+            ReportedPosition = new MapPoint(2.0, 2.0),
+        });
+        var observation = new BrainObservation(100.0, knowledge.Snapshot(100.0), new ActionMask(
+            holdAllowed: true,
+            engageableTrackIds: new[] { "Old-Ship", "Fresh-Ship" },
+            continueCurrentMissionAllowed: false,
+            abortIfSafeAllowed: false));
+
+        var action = new ScriptedBaselinePolicy().Choose(observation);
+        AssertEx.Equal(BrainActionKind.Engage, action.Kind, "baseline should engage when a legal target exists");
+        AssertEx.Equal("Fresh-Ship", action.TrackId, "baseline should prefer the freshest legal target");
+    }
+
+    public static void FacadeDrainsEventsAndExposesEpisodeState()
+    {
+        var observation = new BrainObservation(0.0, Array.Empty<TrackSnapshot>(), new ActionMask(true, Array.Empty<string>(), false, false));
+        var facade = new BrainFacade(observation, _ => new BrainExecutionResult(true, "accepted"));
+        facade.EnqueueEvent(new BrainEvent("test", 0.0, "decision-1", null, null));
+
+        AssertEx.Equal(EpisodeState.Running, facade.EpisodeState, "initial facade must be ready for decisions");
+        AssertEx.Equal(1, facade.DrainEvents().Count, "queued events must be delivered once");
+        AssertEx.Equal(0, facade.DrainEvents().Count, "drained events must not be repeated");
+    }
+
     private sealed record HiddenEntityFixture(double XKm, double YKm, double Health, string State);
 }
 
@@ -621,6 +675,9 @@ public static class Program
             (nameof(BrainIntelTests.TrackLifecycleAgesFromReportedToTrackedStaleAndLost), BrainIntelTests.TrackLifecycleAgesFromReportedToTrackedStaleAndLost),
             (nameof(BrainIntelTests.TrackLifecycleRetainsConflictsAndAllowsLegalReobservation), BrainIntelTests.TrackLifecycleRetainsConflictsAndAllowsLegalReobservation),
             (nameof(BrainIntelTests.TrackLifecycleUsesExplicitDestructionConfirmationOnly), BrainIntelTests.TrackLifecycleUsesExplicitDestructionConfirmationOnly),
+            (nameof(BrainIntelTests.RandomLegalPolicyNeverChoosesMaskedActions), BrainIntelTests.RandomLegalPolicyNeverChoosesMaskedActions),
+            (nameof(BrainIntelTests.ScriptedBaselinePolicyPrefersFreshKnownTarget), BrainIntelTests.ScriptedBaselinePolicyPrefersFreshKnownTarget),
+            (nameof(BrainIntelTests.FacadeDrainsEventsAndExposesEpisodeState), BrainIntelTests.FacadeDrainsEventsAndExposesEpisodeState),
         };
 
         foreach (var test in tests)

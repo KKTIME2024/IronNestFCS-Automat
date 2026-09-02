@@ -50,6 +50,10 @@ public sealed class PlayerParityBrainSession : IBrainFacade
 
     public BrainExecutionResult SubmitDecision(BrainAction action) => facade.SubmitDecision(action);
 
+    public IReadOnlyList<BrainEvent> DrainEvents() => facade.DrainEvents();
+
+    public EpisodeState EpisodeState => facade.EpisodeState;
+
     /// <summary>
     /// 将最终可见的电报文本转成语义事实，再刷新 observation。
     /// 解析器不会读取任务实体或补全未显示的身份/位置/速度。

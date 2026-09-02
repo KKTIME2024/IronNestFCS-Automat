@@ -8,8 +8,10 @@ public sealed class BrainFacade : IBrainFacade
 {
     private readonly Func<BrainAction, BrainExecutionResult> executeAction;
     private readonly List<BrainTransition> transitionHistory = new();
+    private readonly List<BrainEvent> pendingEvents = new();
     private BrainObservation observation;
     private bool terminal;
+    private EpisodeState episodeState = EpisodeState.Running;
 
     public BrainFacade(
         BrainObservation initialObservation,
@@ -26,6 +28,8 @@ public sealed class BrainFacade : IBrainFacade
     public IReadOnlyList<BrainTransition> TransitionHistory => transitionHistory;
 
     public bool IsTerminal => terminal;
+
+    public EpisodeState EpisodeState => episodeState;
 
     public BrainExecutionResult SubmitDecision(BrainAction action)
     {
@@ -55,7 +59,31 @@ public sealed class BrainFacade : IBrainFacade
             terminal);
         LastTransition = transition;
         transitionHistory.Add(transition);
+        EnqueueEvent(new BrainEvent(
+            "decision",
+            observation.GameTimeSeconds,
+            null,
+            action.TrackId,
+            null,
+            new Dictionary<string, string>
+            {
+                ["action"] = action.Kind.ToString(),
+                ["accepted"] = result.Accepted.ToString(),
+            }));
         return result;
+    }
+
+    public void EnqueueEvent(BrainEvent gameEvent)
+    {
+        ArgumentNullException.ThrowIfNull(gameEvent);
+        pendingEvents.Add(gameEvent);
+    }
+
+    public IReadOnlyList<BrainEvent> DrainEvents()
+    {
+        var drained = pendingEvents.ToArray();
+        pendingEvents.Clear();
+        return drained;
     }
 
     /// <summary>
@@ -71,6 +99,7 @@ public sealed class BrainFacade : IBrainFacade
         if (nextObservation != null)
             observation = nextObservation;
         this.terminal = terminal;
+        episodeState = terminal ? EpisodeState.Terminal : EpisodeState.Running;
 
         if (LastTransition is { } previous)
         {
@@ -95,7 +124,9 @@ public sealed class BrainFacade : IBrainFacade
     public void ResetEpisode()
     {
         terminal = false;
+        episodeState = EpisodeState.Running;
         LastTransition = null;
         transitionHistory.Clear();
+        pendingEvents.Clear();
     }
 }

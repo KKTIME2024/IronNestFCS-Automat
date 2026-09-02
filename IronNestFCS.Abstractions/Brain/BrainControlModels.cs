@@ -9,6 +9,27 @@ public enum BrainActionKind
     AbortIfSafe,
 }
 
+/// <summary>纯逻辑 episode 状态；不暴露 Unity 场景或组件实例。</summary>
+public enum EpisodeState
+{
+    Inactive,
+    Starting,
+    WaitingForInitialObservation,
+    Running,
+    Terminal,
+    Resetting,
+    Failed,
+}
+
+/// <summary>跨 decision/mission/round 的机器可读事件边界。</summary>
+public sealed record BrainEvent(
+    string Type,
+    double GameTimeSeconds,
+    string? DecisionId,
+    string? MissionId,
+    string? RoundId,
+    IReadOnlyDictionary<string, string>? Data = null);
+
 public sealed record BrainAction(BrainActionKind Kind, string? TrackId = null);
 
 /// <summary>
@@ -111,8 +132,10 @@ public interface IBrainFacade
 {
     BrainObservation GetObservation();
     BrainExecutionResult SubmitDecision(BrainAction action);
+    IReadOnlyList<BrainEvent> DrainEvents();
     BrainTransition? LastTransition { get; }
     IReadOnlyList<BrainTransition> TransitionHistory { get; }
     bool IsTerminal { get; }
+    EpisodeState EpisodeState { get; }
     void ResetEpisode();
 }
