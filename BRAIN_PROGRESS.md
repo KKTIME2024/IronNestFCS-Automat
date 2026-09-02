@@ -11,6 +11,7 @@ Updated 2026-09-02. This is the first implementation slice; no PPO or ML runtime
 - Added `PlayerParityBrainSession`, which ingests visible telegram text, refreshes observations, and clears knowledge on episode reset.
 - Added an auditable transition history and explicit clock-domain handling: report `T:10:00:00` is not subtracted directly from Unity/episode seconds until a runtime adapter normalizes it.
 - Added a route-only parser guard: `TrainStation`/`WPA`/`WPB`/… are treated as map context, not silently as the moving train. If no moving designation is printed, the route is retained under an auditable `route:<sourceId>` identity.
+- Added an opt-in main-thread `Teleprinter.SubmitLines` probe in Logic. Set `IRONNEST_BRAIN_TELEGRAM=1` to capture the submitted visible line payload into the parity session; the default remains off and the actuator sink intentionally rejects actions until the legal target-position bridge exists.
 
 ## Verification
 
@@ -21,7 +22,7 @@ Updated 2026-09-02. This is the first implementation slice; no PPO or ML runtime
 ## Not yet measured / not yet implemented
 
 - No Unity runtime episode has been run.
-- No Teleprinter hook captures the game’s final rendered text yet; the current adapter is ready for that boundary but still requires a main-thread Logic integration.
+- The Teleprinter hook is compiled but not runtime-tested yet; this needs a game launch with `IRONNEST_BRAIN_TELEGRAM=1` and log inspection.
 - No legal map-reveal/scout adapter has been wired, so a telegram with only a grid does not yet become a world-coordinate firing target.
 - No Brain action has been connected to `FSC.EnqueueMission`; existing `BaselinePlanner`/`CbtPlanner` behavior is unchanged.
 - No native reward/event tracker, terminal detector, mission reset harness, IPC, 4x/8x benchmark, or episodes/hour metric exists yet.
