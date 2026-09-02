@@ -31,11 +31,11 @@
 - Consumes: `TrackIntel` and visible semantic events only.
 - Produces: a deterministic projection/fingerprint of PlayerParity observation and a testable guarantee that hidden debug facts cannot affect it.
 
-- [ ] **Step 1: Write a failing test** that builds two knowledge stores with identical visible telegram facts, mutates a separate hidden-entity fixture (position, health, velocity, state), and asserts equal observation fingerprints; also assert an `OmniscientDebug` update is rejected.
-- [ ] **Step 2: Run the harness** and verify the new test fails because no isolation projection exists.
-- [ ] **Step 3: Implement** a projection that hashes only sorted `TrackSnapshot` player-visible fields and action-mask IDs; do not accept an entity collection or object reference anywhere in the API.
-- [ ] **Step 4: Run all Brain tests** and verify the invariant passes.
-- [ ] **Step 5: Commit** with `test(brain): enforce player-parity information isolation`.
+- [x] **Step 1: Write a failing test** that builds two knowledge stores with identical visible telegram facts, mutates a separate hidden-entity fixture (position, health, velocity, state), and asserts equal observation fingerprints; also assert an `OmniscientDebug` update is rejected.
+- [x] **Step 2: Run the harness** and verify the new test fails because no isolation projection exists.
+- [x] **Step 3: Implement** a projection that hashes only sorted `TrackSnapshot` player-visible fields and action-mask IDs; do not accept an entity collection or object reference anywhere in the API.
+- [x] **Step 4: Run all Brain tests** and verify the invariant passes.
+- [x] **Step 5: Commit** with `test(brain): enforce player-parity information isolation`.
 
 ### Task 2: Add a corpus-driven telegram coverage harness
 
@@ -49,11 +49,11 @@
 - Consumes: checked-in visible telegram fixtures and expected semantic categories.
 - Produces: deterministic scanned/semantic/fully-parsed/partial/unsupported counts and regression tests for course, speed, distance, timers, route, damage, scouting, urgency, and unresolved templates.
 
-- [ ] **Step 1: Add failing corpus cases** for every semantic class already identified in extracted assets, including unsupported destruction/scouting/urgency wording.
-- [ ] **Step 2: Run the focused corpus test** and verify unsupported cases are currently reported instead of silently parsed.
-- [ ] **Step 3: Implement** a fixture table and coverage calculator; extend parser only for unambiguous text forms, and expose `UnsupportedSemantic` with original text for the rest.
-- [ ] **Step 4: Run the corpus suite** and print exact coverage numbers.
-- [ ] **Step 5: Commit** with `feat(brain): expand telegram semantic corpus`.
+- [x] **Step 1: Add failing corpus cases** for every semantic class already identified in extracted assets, including unsupported destruction/scouting/urgency wording.
+- [x] **Step 2: Run the focused corpus test** and verify unsupported cases are currently reported instead of silently parsed.
+- [x] **Step 3: Implement** a fixture table and coverage calculator; extend parser only for unambiguous text forms, and expose `UnsupportedSemantic` with original text for the rest.
+- [x] **Step 4: Run the corpus suite** and print exact coverage numbers.
+- [x] **Step 5: Commit** with `feat(brain): expand telegram semantic corpus`.
 
 ### Task 3: Make Track knowledge an explicit lifecycle state machine
 
@@ -66,11 +66,11 @@
 - Consumes: partial and conflicting `TrackIntel` reports.
 - Produces: `TrackLifecycleState`, stale/lost/destroyed-confirmed snapshots, deterministic association by public track ID, and a reset-safe knowledge store.
 
-- [ ] **Step 1: Write failing lifecycle tests** for no-position reports, position completion, same-ID merge, conflicting newer report, stale/lost thresholds, legal destroyed confirmation, re-observation, and reset.
-- [ ] **Step 2: Run tests** and verify the missing lifecycle members fail.
-- [ ] **Step 3: Implement** explicit state transitions based only on report time and legal evidence; preserve conflict metadata instead of overwriting silently; never infer destruction from hidden entity disappearance.
-- [ ] **Step 4: Run all tests** and verify transition behavior.
-- [ ] **Step 5: Commit** with `feat(brain): add track lifecycle state machine`.
+- [x] **Step 1: Write failing lifecycle tests** for no-position reports, position completion, same-ID merge, conflicting newer report, stale/lost thresholds, legal destroyed confirmation, re-observation, and reset.
+- [x] **Step 2: Run tests** and verify the missing lifecycle members fail.
+- [x] **Step 3: Implement** explicit state transitions based only on report time and legal evidence; preserve conflict metadata instead of overwriting silently; never infer destruction from hidden entity disappearance.
+- [x] **Step 4: Run all tests** and verify transition behavior.
+- [x] **Step 5: Commit** with `feat(brain): add track lifecycle state machine`.
 
 ### Task 4: Stabilize the Brain-facing pure contract and policies
 
@@ -84,11 +84,11 @@
 - Consumes: `BrainObservation`, `ActionMask`, and deterministic RNG injection.
 - Produces: `ValidActionSet` alias/projection, `BrainEvent` drain, `EpisodeState`, `RandomLegalPolicy`, and `ScriptedBaselinePolicy` with no Unity types.
 
-- [ ] **Step 1: Write failing tests** for deterministic scripted priority, random-only-legal selection, event draining, and terminal decision rejection.
-- [ ] **Step 2: Run tests** and verify the policy/event API is absent.
-- [ ] **Step 3: Implement** minimal policies and event queue; scripted policy prefers fresh located tracks, then lower uncertainty/distance, otherwise Continue/Hold; random policy samples only the mask.
-- [ ] **Step 4: Run all tests** and verify repeatability with a seeded RNG.
-- [ ] **Step 5: Commit** with `feat(brain): add scripted and random legal policies`.
+- [x] **Step 1: Write failing tests** for deterministic scripted priority, random-only-legal selection, event draining, and terminal decision rejection.
+- [x] **Step 2: Run tests** and verify the policy/event API is absent.
+- [x] **Step 3: Implement** minimal policies and event queue; scripted policy prefers fresh located tracks, then lower uncertainty/distance, otherwise Continue/Hold; random policy samples only the mask.
+- [x] **Step 4: Run all tests** and verify repeatability with a seeded RNG.
+- [x] **Step 5: Commit** with `feat(brain): add scripted and random legal policies`.
 
 ### Task 5: Add pure event attribution and episode lifecycle
 
@@ -102,11 +102,11 @@
 - Consumes: decision/mission/shot/impact/damage/terminal events with decision, mission, and round IDs.
 - Produces: delayed reward attribution, componentized transitions, and `Inactive → Starting → WaitingForInitialObservation → Running → Terminal → Resetting` lifecycle.
 
-- [ ] **Step 1: Write failing tests** for delayed impact attribution, one-time terminal, reset clearing pending decisions/rewards/tracks, and stale callback rejection by episode ID.
-- [ ] **Step 2: Run tests** and verify lifecycle/event types are missing.
-- [ ] **Step 3: Implement** pure attribution ledger and episode state machine; keep reward components separate and reject callbacks from an old episode.
-- [ ] **Step 4: Run complete tests** and verify exact totals and terminal semantics.
-- [ ] **Step 5: Commit** with `feat(brain): add decision-to-impact attribution and episode lifecycle`.
+- [x] **Step 1: Write failing tests** for delayed impact attribution, one-time terminal, reset clearing pending decisions/rewards/tracks, and stale callback rejection by episode ID.
+- [x] **Step 2: Run tests** and verify lifecycle/event types are missing.
+- [x] **Step 3: Implement** pure attribution ledger and episode state machine; keep reward components separate and reject callbacks from an old episode.
+- [x] **Step 4: Run complete tests** and verify exact totals and terminal semantics.
+- [x] **Step 5: Commit** with `feat(brain): add decision-to-impact attribution and episode lifecycle`.
 
 ### Task 6: Update progress and perform unattended-safe verification
 
@@ -114,10 +114,10 @@
 - Modify: `BRAIN_PROGRESS.md`
 - Modify: `docs/superpowers/plans/2026-09-02-brain-continuation.md`
 
-- [ ] **Step 1:** Run the pure Brain harness and Logic build without launching a mission or requiring input.
-- [ ] **Step 2:** If the installed game is safely launchable, perform only opt-in marker smoke loading; do not simulate UI clicks and do not claim a real episode.
-- [ ] **Step 3:** Record unit/build/game-load/real-mission status separately, exact telegram coverage, fairness invariant, environment matrix, blockers, and the next 1–3 highest-value steps.
-- [ ] **Step 4:** Commit the progress update with `docs(brain): record foundation continuation status`.
+- [x] **Step 1:** Run the pure Brain harness and Logic build without launching a mission or requiring input.
+- [x] **Step 2:** If the installed game is safely launchable, perform only opt-in marker smoke loading; do not simulate UI clicks and do not claim a real episode.
+- [x] **Step 3:** Record unit/build/game-load/real-mission status separately, exact telegram coverage, fairness invariant, environment matrix, blockers, and the next 1–3 highest-value steps.
+- [x] **Step 4:** Commit the progress update with `docs(brain): record foundation continuation status`.
 
 ## Self-review checklist
 

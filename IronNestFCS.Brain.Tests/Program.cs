@@ -1,4 +1,6 @@
 using IronNestFCS.Abstractions.Brain;
+using System.IO.Pipes;
+using System.Text;
 
 static class AssertEx
 {
@@ -718,6 +720,49 @@ static class BrainIntelTests
             "a high-level Hold decision must not masquerade as a mission id");
     }
 
+    public static void BrainPipeProtocolRejectsMalformedAndWrongVersion()
+    {
+        var handlerCalls = 0;
+        var malformed = BrainPipeProtocol.ProcessLine("{not-json", _ =>
+        {
+            handlerCalls++;
+            return BrainPipeResponse.Pong();
+        });
+        AssertEx.Equal("error", BrainPipeProtocol.DecodeResponse(malformed).Type,
+            "malformed JSON must produce a protocol error");
+        AssertEx.Equal(0, handlerCalls, "malformed input must not reach the policy handler");
+
+        var wrongVersion = BrainPipeProtocol.Encode(new BrainPipeRequest("ping", ProtocolVersion: "999"));
+        var versionResponse = BrainPipeProtocol.DecodeResponse(BrainPipeProtocol.ProcessLine(wrongVersion, _ =>
+            BrainPipeResponse.Pong()));
+        AssertEx.Equal("error", versionResponse.Type, "unknown protocol versions must be rejected");
+        AssertEx.True(versionResponse.Error!.Contains("version", StringComparison.OrdinalIgnoreCase),
+            "version mismatch should be explicit");
+    }
+
+    public static void BrainPipeServerRoundTripsPingAndStopsCleanly()
+    {
+        var pipeName = "ironnest-brain-test-" + Guid.NewGuid().ToString("N");
+        using var server = new NamedPipeBrainServer(pipeName, request =>
+            request.Type == "ping"
+                ? BrainPipeResponse.Pong()
+                : BrainPipeResponse.ErrorResponse("unexpected test request"));
+        server.Start();
+
+        using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.None);
+        client.Connect(3000);
+        var utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        var writer = new StreamWriter(client, utf8NoBom, bufferSize: 1024, leaveOpen: true) { AutoFlush = true };
+        var reader = new StreamReader(client, utf8NoBom, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+        writer.WriteLine(BrainPipeProtocol.Encode(new BrainPipeRequest("ping")));
+        var response = BrainPipeProtocol.DecodeResponse(reader.ReadLine()!);
+
+        AssertEx.Equal("pong", response.Type, "named pipe should return a typed pong response");
+        client.Dispose();
+        server.Stop();
+        AssertEx.True(server.IsStopped, "server stop must release its worker thread");
+    }
+
     private sealed record HiddenEntityFixture(double XKm, double YKm, double Health, string State);
 }
 
@@ -762,6 +807,8 @@ public static class Program
             (nameof(BrainIntelTests.RewardLedgerRejectsOldEpisodeEventsAfterReset), BrainIntelTests.RewardLedgerRejectsOldEpisodeEventsAfterReset),
             (nameof(BrainIntelTests.EpisodeStateMachineTerminatesOnceAndClearsOnReset), BrainIntelTests.EpisodeStateMachineTerminatesOnceAndClearsOnReset),
             (nameof(BrainIntelTests.FacadeCreatesDecisionIdsForAttribution), BrainIntelTests.FacadeCreatesDecisionIdsForAttribution),
+            (nameof(BrainIntelTests.BrainPipeProtocolRejectsMalformedAndWrongVersion), BrainIntelTests.BrainPipeProtocolRejectsMalformedAndWrongVersion),
+            (nameof(BrainIntelTests.BrainPipeServerRoundTripsPingAndStopsCleanly), BrainIntelTests.BrainPipeServerRoundTripsPingAndStopsCleanly),
         };
 
         foreach (var test in tests)
