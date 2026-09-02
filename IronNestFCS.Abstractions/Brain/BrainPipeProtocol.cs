@@ -13,7 +13,8 @@ public sealed record BrainPipeRequest(
     BrainActionKind? ActionKind = null,
     string? TrackId = null,
     int TimeoutMs = 5000,
-    string? Payload = null);
+    string? Payload = null,
+    long? RuntimeGeneration = null);
 
 public sealed record BrainPipeResponse(
     string Type,
@@ -24,7 +25,8 @@ public sealed record BrainPipeResponse(
     BrainActionKind? ActionKind = null,
     string? TrackId = null,
     string? Error = null,
-    string? Payload = null)
+    string? Payload = null,
+    long? RuntimeGeneration = null)
 {
     public static BrainPipeResponse Pong() => new("pong", BrainPipeProtocol.CurrentVersion);
 
@@ -56,8 +58,28 @@ public static class BrainPipeProtocol
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = new SnakeCaseNamingPolicy(),
         Converters = { new JsonStringEnumConverter() },
     };
+
+    private sealed class SnakeCaseNamingPolicy : JsonNamingPolicy
+    {
+        public override string ConvertName(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+                return name;
+
+            var builder = new StringBuilder(name.Length + 8);
+            for (var index = 0; index < name.Length; index++)
+            {
+                var character = name[index];
+                if (char.IsUpper(character) && index > 0)
+                    builder.Append('_');
+                builder.Append(char.ToLowerInvariant(character));
+            }
+            return builder.ToString();
+        }
+    }
 
     public static string Encode(BrainPipeRequest request)
     {

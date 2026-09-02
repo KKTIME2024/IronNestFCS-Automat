@@ -157,7 +157,7 @@ public sealed class PlayerParityActionBridge
             $"[Brain] PlayerParity Engage accepted track={trackId} " +
             $"mission={mission.MissionId} pos=({mapPosition.XKm:F2},{mapPosition.YKm:F2})km " +
             $"moving={(motion != null)} entityId=<empty>");
-        return Accept($"mission {mission.MissionId} queued");
+        return Accept($"mission {mission.MissionId} queued", mission.MissionId);
     }
 
     private TacticalDecider.TargetInfo BuildTargetInfo(
@@ -229,8 +229,8 @@ public sealed class PlayerParityActionBridge
             && string.Equals(task.entityName, trackId, StringComparison.Ordinal);
     }
 
-    private static BrainExecutionResult Accept(string reason) =>
-        new(true, reason);
+    private static BrainExecutionResult Accept(string reason, string? missionId = null) =>
+        new(true, reason) { MissionId = missionId };
 
     private static BrainExecutionResult Reject(string reason) =>
         new(false, reason);

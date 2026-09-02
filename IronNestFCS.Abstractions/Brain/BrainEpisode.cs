@@ -56,6 +56,21 @@ public sealed class BrainEpisode
         return true;
     }
 
+    /// <summary>
+    /// Records reward that arrives after the terminal marker but before the
+    /// scene reset has crossed its ownership boundary. It deliberately does
+    /// not create a new decision transition; the reward remains attached to
+    /// this episode while the coordinator is still in Resetting.
+    /// </summary>
+    public bool RegisterDelayedReward(RewardBreakdown reward)
+    {
+        ArgumentNullException.ThrowIfNull(reward);
+        if (State != EpisodeState.Resetting)
+            return false;
+        RewardTotal = Add(RewardTotal, reward);
+        return true;
+    }
+
     public bool TryTerminate(string reason, bool failed = false)
     {
         if (IsTerminal || State == EpisodeState.Resetting || State == EpisodeState.Inactive)

@@ -44,6 +44,7 @@ public sealed class BrainRewardAttributionLedger
     private string? activeEpisodeId;
 
     public string? ActiveEpisodeId => activeEpisodeId;
+    public int DecisionCount => rewardsByDecision.Count;
 
     public void StartEpisode(string episodeId)
     {
@@ -86,6 +87,20 @@ public sealed class BrainRewardAttributionLedger
         return decisionId != null && rewardsByDecision.TryGetValue(decisionId, out var reward)
             ? reward
             : new RewardBreakdown();
+    }
+
+    public bool TryResolveDecisionId(BrainGameEvent gameEvent, out string decisionId)
+    {
+        ArgumentNullException.ThrowIfNull(gameEvent);
+        var resolved = ResolveDecision(gameEvent);
+        if (resolved == null)
+        {
+            decisionId = string.Empty;
+            return false;
+        }
+
+        decisionId = resolved;
+        return true;
     }
 
     public void Clear()

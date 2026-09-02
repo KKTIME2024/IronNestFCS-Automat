@@ -39,6 +39,11 @@ public sealed class PlayerParityBrainSession : IBrainFacade
 
     public BrainObservation GetObservation() => facade.GetObservation();
 
+    public string EpisodeId => facade.EpisodeId;
+    public string? PendingDecisionId => facade.PendingDecisionId;
+
+    public BrainDecisionRequest? BeginDecisionRequest() => facade.BeginDecisionRequest();
+
     /// <summary>当前决策点的合法动作掩码。</summary>
     public ActionMask GetValidActions() => facade.GetObservation().ActionMask;
 
@@ -49,6 +54,9 @@ public sealed class PlayerParityBrainSession : IBrainFacade
     public bool IsTerminal => facade.IsTerminal;
 
     public BrainExecutionResult SubmitDecision(BrainAction action) => facade.SubmitDecision(action);
+
+    public BrainExecutionResult SubmitDecision(BrainAction action, string decisionId) =>
+        facade.SubmitDecision(action, decisionId);
 
     public IReadOnlyList<BrainEvent> DrainEvents() => facade.DrainEvents();
 

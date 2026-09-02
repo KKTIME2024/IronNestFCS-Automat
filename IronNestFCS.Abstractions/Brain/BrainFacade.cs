@@ -16,6 +16,7 @@ public sealed class BrainFacade : IBrainFacade
     private int episodeSequence;
     private long decisionSequence;
     private string episodeId;
+    private string? pendingDecisionId;
 
     public BrainFacade(
         BrainObservation initialObservation,
@@ -40,7 +41,25 @@ public sealed class BrainFacade : IBrainFacade
 
     public string EpisodeId => episodeId;
 
-    public BrainExecutionResult SubmitDecision(BrainAction action)
+    public string? PendingDecisionId => pendingDecisionId;
+
+    /// <summary>
+    /// Allocates the id sent with an observation. Calling it repeatedly before
+    /// an action returns the same request, so a reconnect cannot create a
+    /// second valid decision point.
+    /// </summary>
+    public BrainDecisionRequest? BeginDecisionRequest()
+    {
+        if (terminal)
+            return null;
+
+        pendingDecisionId ??= NextDecisionId();
+        return new BrainDecisionRequest(episodeId, pendingDecisionId, observation);
+    }
+
+    public BrainExecutionResult SubmitDecision(BrainAction action) => SubmitDecision(action, null);
+
+    public BrainExecutionResult SubmitDecision(BrainAction action, string? requestedDecisionId)
     {
         ArgumentNullException.ThrowIfNull(action);
 
@@ -48,6 +67,11 @@ public sealed class BrainFacade : IBrainFacade
         if (terminal)
         {
             result = new BrainExecutionResult(false, "episode is terminal");
+        }
+        else if (requestedDecisionId != null
+            && !string.Equals(requestedDecisionId, pendingDecisionId, StringComparison.Ordinal))
+        {
+            result = new BrainExecutionResult(false, "decision is stale");
         }
         else if (!observation.ActionMask.Allows(action))
         {
@@ -58,7 +82,13 @@ public sealed class BrainFacade : IBrainFacade
             result = executeAction(action);
         }
 
-        var decisionId = $"{episodeId}:decision:{++decisionSequence}";
+        var staleRequest = requestedDecisionId != null
+            && !string.Equals(requestedDecisionId, pendingDecisionId, StringComparison.Ordinal);
+        var decisionId = staleRequest
+            ? requestedDecisionId!
+            : pendingDecisionId ?? NextDecisionId();
+        if (!staleRequest)
+            pendingDecisionId = null;
         var transition = new BrainTransition(
             observation,
             action,
@@ -142,9 +172,12 @@ public sealed class BrainFacade : IBrainFacade
         episodeState = EpisodeState.Running;
         episodeSequence++;
         decisionSequence = 0;
+        pendingDecisionId = null;
         episodeId = $"{episodeBaseId}:reset:{episodeSequence}";
         LastTransition = null;
         transitionHistory.Clear();
         pendingEvents.Clear();
     }
+
+    private string NextDecisionId() => $"{episodeId}:decision:{++decisionSequence}";
 }

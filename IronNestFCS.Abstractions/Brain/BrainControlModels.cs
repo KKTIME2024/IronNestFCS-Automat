@@ -30,6 +30,12 @@ public sealed record BrainEvent(
     string? RoundId,
     IReadOnlyDictionary<string, string>? Data = null);
 
+/// <summary>一个决策点的稳定快照；decision id 在动作提交前就已分配。</summary>
+public sealed record BrainDecisionRequest(
+    string EpisodeId,
+    string DecisionId,
+    BrainObservation Observation);
+
 public sealed record BrainAction(BrainActionKind Kind, string? TrackId = null);
 
 /// <summary>
@@ -113,7 +119,11 @@ public sealed record RewardBreakdown(
         - ImmuneHitPenalty;
 }
 
-public sealed record BrainExecutionResult(bool Accepted, string Reason = "");
+public sealed record BrainExecutionResult(bool Accepted, string Reason = "")
+{
+    /// <summary>若高层动作创建了任务，Logic 可把公开 mission id 带回归因链。</summary>
+    public string? MissionId { get; init; }
+}
 
 /// <summary>一条可审计的决策转移；后续 IPC 只需序列化这个边界。</summary>
 public sealed record BrainTransition(

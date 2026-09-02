@@ -738,6 +738,12 @@ static class BrainIntelTests
         AssertEx.Equal("error", versionResponse.Type, "unknown protocol versions must be rejected");
         AssertEx.True(versionResponse.Error!.Contains("version", StringComparison.OrdinalIgnoreCase),
             "version mismatch should be explicit");
+
+        var snakeCaseResponse = BrainPipeProtocol.DecodeResponse(BrainPipeProtocol.ProcessLine(
+            "{\"type\":\"ping\",\"protocol_version\":\"1\"}",
+            _ => BrainPipeResponse.Pong()));
+        AssertEx.Equal("pong", snakeCaseResponse.Type,
+            "the real Python client snake_case request must deserialize at the protocol boundary");
     }
 
     public static void BrainPipeServerRoundTripsPingAndStopsCleanly()
@@ -777,6 +783,8 @@ static class BrainIntelTests
 
         AssertEx.True(harness.RequestReset(100.0), "terminal episode should request one reload");
         AssertEx.Equal(1, reloadCalls, "reload must be requested exactly once");
+        AssertEx.True(!harness.RequestReset(100.5), "reset must be single-flight while teardown is pending");
+        AssertEx.Equal(1, reloadCalls, "duplicate reset request must not reload twice");
         AssertEx.Equal(BrainResetPhase.WaitingForTeardown, harness.Phase,
             "reset must first wait for old objects to disappear");
         harness.Tick(101.0, oldObjectsGone: false, newMissionDetected: true);
@@ -810,6 +818,426 @@ static class BrainIntelTests
         AssertEx.Equal(BrainResetPhase.Failed, harness.Phase, "reset watchdog must fail after timeout");
         AssertEx.Equal("RESET_FAILED", harness.AuditEvents[^1].Type, "timeout must be auditable");
         AssertEx.True(!harness.RequestReset(17.0), "failed reset must not be restarted implicitly");
+    }
+
+    public static void RuntimeCoordinatorRunsEpisodeAndResets()
+    {
+        var session = NewRuntimeSession(out var executed);
+        var pipe = new BrainPipeRequestQueue();
+        var host = new FakeRuntimeHost { MissionReady = true };
+        var reset = new FakeResetDriver { CompleteOnTick = true };
+        var runtime = new BrainRuntimeCoordinator(session, host, pipe, reset, policyTimeoutSeconds: 5.0);
+        runtime.Start();
+        runtime.Tick(0.0, 0.0);
+
+        AssertEx.Equal(BrainRuntimeState.Running, runtime.State, "active mission should start Brain runtime");
+        AssertEx.True(runtime.PendingDecisionId != null, "mission detection should create one decision request");
+        var episodeObject = runtime.Episode;
+
+        var observationTask = Task.Run(() => pipe.Handle(new BrainPipeRequest(
+            "observation", EpisodeId: runtime.EpisodeId,
+            RuntimeGeneration: runtime.RuntimeGeneration, TimeoutMs: 1000)));
+        AssertEx.True(SpinWait.SpinUntil(() => pipe.PendingCount > 0, 1000),
+            "observation request should reach the runtime queue");
+        runtime.Tick(0.1, 0.1);
+        var observation = observationTask.GetAwaiter().GetResult();
+        AssertEx.Equal("observation", observation.Type, "pipe should return the pending observation");
+        AssertEx.Equal(runtime.PendingDecisionId, observation.DecisionId, "observation must carry current decision id");
+        AssertEx.True(observation.Payload!.Contains("engageable_track_ids", StringComparison.Ordinal),
+            "observation payload must include valid actions");
+
+        var actionTask = Task.Run(() => pipe.Handle(new BrainPipeRequest(
+            "action",
+            EpisodeId: runtime.EpisodeId,
+            RuntimeGeneration: runtime.RuntimeGeneration,
+            DecisionId: runtime.PendingDecisionId,
+            ActionKind: BrainActionKind.Engage,
+            TrackId: "Target",
+            TimeoutMs: 1000)));
+        AssertEx.True(SpinWait.SpinUntil(() => pipe.PendingCount > 0, 1000),
+            "action request should reach the runtime queue");
+        runtime.Tick(0.2, 0.2);
+        var action = actionTask.GetAwaiter().GetResult();
+        AssertEx.True(action.Accepted, "legal pipe action should be accepted");
+        AssertEx.Equal(BrainActionKind.Engage, executed.Single().Kind, "accepted action must reach the game sink");
+
+        host.Events.Enqueue(new BrainGameEvent(
+            BrainEventType.MissionCompleted,
+            runtime.EpisodeId,
+            4.0,
+            runtime.LastDecisionId,
+            MissionId: "mission-1",
+            RoundId: "round-1",
+            Amount: 3.0));
+        runtime.Tick(4.0, 4.0);
+        AssertEx.Equal(BrainRuntimeState.Resetting, runtime.State, "terminal event should begin reset");
+        AssertEx.Equal(1, reset.RequestCount, "terminal episode should request one reset");
+
+        runtime.Tick(5.0, 5.0);
+        AssertEx.Equal(BrainRuntimeState.Running, runtime.State, "successful reset should start the next episode");
+        AssertEx.True(runtime.EpisodeId != "episode", "reset must advance episode generation");
+        AssertEx.True(ReferenceEquals(episodeObject, runtime.Episode),
+            "reset should advance the episode lifecycle object instead of replacing its audit history");
+        AssertEx.True(runtime.PendingDecisionId != null, "new episode should wait at a fresh decision point");
+        var resetAudit = runtime.DrainAudit();
+        AssertEx.True(resetAudit.Any(x => x.Type == "OLD_MISSION_GONE"),
+            "reset teardown must be visible as OLD_MISSION_GONE");
+        AssertEx.True(resetAudit.Any(x => x.Type == "NEW_MISSION_FOUND"),
+            "new mission detection must be visible as NEW_MISSION_FOUND");
+        foreach (var stage in new[]
+        {
+            "BRAIN_BRINGUP_STAGE_01_RUNTIME_STARTED",
+            "BRAIN_BRINGUP_STAGE_02_MISSION_BOUND",
+            "BRAIN_BRINGUP_STAGE_05_DECISION_REQUESTED",
+            "BRAIN_BRINGUP_STAGE_06_ACTION_ACCEPTED",
+            "BRAIN_BRINGUP_STAGE_07_FSC_MISSION_CREATED",
+            "BRAIN_BRINGUP_STAGE_11_EPISODE_TERMINAL",
+            "BRAIN_BRINGUP_STAGE_12_RESET_STARTED",
+            "BRAIN_BRINGUP_STAGE_13_RESET_SUCCESS",
+            "BRAIN_BRINGUP_STAGE_14_EPISODE_2_STARTED",
+        })
+            AssertEx.True(resetAudit.Any(x => x.Type == stage), $"bring-up stage {stage} must be audited");
+    }
+
+    public static void RuntimePolicyTimeoutFallsBackToHold()
+    {
+        var session = NewRuntimeSession(out var executed);
+        var runtime = new BrainRuntimeCoordinator(
+            session,
+            new FakeRuntimeHost { MissionReady = true },
+            new BrainPipeRequestQueue(),
+            new FakeResetDriver(),
+            policyTimeoutSeconds: 2.0);
+        runtime.Start();
+        runtime.Tick(0.0, 0.0);
+        runtime.Tick(2.1, 2.1);
+
+        AssertEx.Equal(BrainActionKind.Hold, executed.Single().Kind, "policy timeout must execute Hold on main-thread tick");
+        AssertEx.True(runtime.DrainAudit().Any(x => x.Type == "POLICY_TIMEOUT"),
+            "policy timeout must be visible in runtime audit");
+    }
+
+    public static void RuntimeRejectsStaleActionWithoutExecutingIt()
+    {
+        var session = NewRuntimeSession(out var executed);
+        var pipe = new BrainPipeRequestQueue();
+        var runtime = new BrainRuntimeCoordinator(
+            session,
+            new FakeRuntimeHost { MissionReady = true },
+            pipe,
+            new FakeResetDriver());
+        runtime.Start();
+        runtime.Tick(0.0, 0.0);
+
+        var staleObservationTask = Task.Run(() => pipe.Handle(new BrainPipeRequest(
+            "observation",
+            EpisodeId: runtime.EpisodeId,
+            RuntimeGeneration: runtime.RuntimeGeneration - 1,
+            TimeoutMs: 1000)));
+        AssertEx.True(SpinWait.SpinUntil(() => pipe.PendingCount > 0, 1000),
+            "stale observation should reach the runtime queue");
+        runtime.Tick(0.05, 0.05);
+        var staleObservation = staleObservationTask.GetAwaiter().GetResult();
+        AssertEx.True(!staleObservation.Accepted, "stale observation generation must be rejected");
+        AssertEx.True(staleObservation.Error!.Contains("generation", StringComparison.Ordinal),
+            "stale observation rejection must name the generation guard");
+
+        var task = Task.Run(() => pipe.Handle(new BrainPipeRequest(
+            "action",
+            EpisodeId: runtime.EpisodeId,
+            RuntimeGeneration: runtime.RuntimeGeneration,
+            DecisionId: "stale-decision",
+            ActionKind: BrainActionKind.Engage,
+            TrackId: "Target",
+            TimeoutMs: 1000)));
+        AssertEx.True(SpinWait.SpinUntil(() => pipe.PendingCount > 0, 1000),
+            "stale action should reach the runtime queue");
+        runtime.Tick(0.1, 0.1);
+        var response = task.GetAwaiter().GetResult();
+
+        AssertEx.True(!response.Accepted, "stale decision must be rejected");
+        AssertEx.Equal(0, executed.Count, "stale action must not reach the actuator");
+        AssertEx.True(runtime.PendingDecisionId != null, "current decision must remain available after stale input");
+
+        var wrongEpisodeTask = Task.Run(() => pipe.Handle(new BrainPipeRequest(
+            "action",
+            EpisodeId: "episode-from-previous-run",
+            RuntimeGeneration: runtime.RuntimeGeneration,
+            DecisionId: runtime.PendingDecisionId,
+            ActionKind: BrainActionKind.Engage,
+            TrackId: "Target",
+            TimeoutMs: 1000)));
+        AssertEx.True(SpinWait.SpinUntil(() => pipe.PendingCount > 0, 1000),
+            "wrong-episode action should reach the runtime queue");
+        runtime.Tick(0.2, 0.2);
+        var wrongEpisodeResponse = wrongEpisodeTask.GetAwaiter().GetResult();
+        AssertEx.True(!wrongEpisodeResponse.Accepted, "stale episode must be rejected");
+        AssertEx.Equal(0, executed.Count, "stale episode action must not reach the actuator");
+
+        var wrongGenerationTask = Task.Run(() => pipe.Handle(new BrainPipeRequest(
+            "action",
+            EpisodeId: runtime.EpisodeId,
+            RuntimeGeneration: runtime.RuntimeGeneration - 1,
+            DecisionId: runtime.PendingDecisionId,
+            ActionKind: BrainActionKind.Engage,
+            TrackId: "Target",
+            TimeoutMs: 1000)));
+        AssertEx.True(SpinWait.SpinUntil(() => pipe.PendingCount > 0, 1000),
+            "wrong-generation action should reach the runtime queue");
+        runtime.Tick(0.3, 0.3);
+        var wrongGenerationResponse = wrongGenerationTask.GetAwaiter().GetResult();
+        AssertEx.True(!wrongGenerationResponse.Accepted, "stale runtime generation must be rejected");
+        AssertEx.Equal(0, executed.Count, "stale runtime generation must not reach the actuator");
+    }
+
+    public static void RuntimeDropsPreviousEpisodeEventAfterReset()
+    {
+        var session = NewRuntimeSession(out _);
+        var host = new FakeRuntimeHost { MissionReady = true };
+        var reset = new FakeResetDriver { CompleteOnTick = true };
+        var runtime = new BrainRuntimeCoordinator(session, host, new BrainPipeRequestQueue(), reset);
+        runtime.Start();
+        runtime.Tick(0.0, 0.0);
+        var oldEpisode = runtime.EpisodeId;
+        host.Events.Enqueue(new BrainGameEvent(
+            BrainEventType.MissionFailed, oldEpisode, 1.0, runtime.PendingDecisionId,
+            MissionId: null, RoundId: null, Amount: 2.0));
+        runtime.Tick(1.0, 1.0);
+        runtime.Tick(2.0, 2.0);
+        AssertEx.True(runtime.EpisodeId != oldEpisode, "reset must replace episode id");
+
+        var rewardBefore = runtime.Episode.RewardTotal.Total;
+        host.Events.Enqueue(new BrainGameEvent(
+            BrainEventType.TargetDamaged, oldEpisode, 3.0, null,
+            MissionId: "old-mission", RoundId: null, Amount: 99.0));
+        runtime.Tick(3.0, 3.0);
+
+        AssertEx.Equal(rewardBefore, runtime.Episode.RewardTotal.Total,
+            "old episode impact must not change the new episode reward");
+        AssertEx.True(runtime.DrainAudit().Any(x => x.Type == "STALE_EVENT_REJECTED"),
+            "old episode event must be auditable");
+    }
+
+    public static void RuntimeResetTimeoutEntersSafeFailedState()
+    {
+        var session = NewRuntimeSession(out _);
+        var host = new FakeRuntimeHost { MissionReady = true };
+        var reset = new FakeResetDriver { CompleteOnTick = false };
+        var runtime = new BrainRuntimeCoordinator(
+            session, host, new BrainPipeRequestQueue(), reset,
+            policyTimeoutSeconds: 2.0,
+            resetTimeoutSeconds: 3.0);
+        runtime.Start();
+        runtime.Tick(0.0, 0.0);
+        host.Events.Enqueue(new BrainGameEvent(BrainEventType.MissionCompleted, runtime.EpisodeId, 1.0, runtime.PendingDecisionId,
+            MissionId: null, RoundId: null));
+        runtime.Tick(1.0, 1.0);
+        runtime.Tick(5.0, 5.0);
+
+        AssertEx.Equal(BrainRuntimeState.Failed, runtime.State, "reset watchdog must enter safe failed state");
+        AssertEx.True(runtime.DrainAudit().Any(x => x.Type == "RESET_FAILED"),
+            "reset failure must be visible in runtime audit");
+    }
+
+    public static void RuntimeKeepsDelayedImpactBeforeResetBoundary()
+    {
+        var session = NewRuntimeSession(out _);
+        var host = new FakeRuntimeHost { MissionReady = true };
+        var reset = new FakeResetDriver { CompleteOnTick = false };
+        var runtime = new BrainRuntimeCoordinator(session, host, new BrainPipeRequestQueue(), reset);
+        runtime.Start();
+        runtime.Tick(0.0, 0.0);
+
+        var oldEpisode = runtime.EpisodeId;
+        var decisionId = runtime.PendingDecisionId;
+        host.Events.Enqueue(new BrainGameEvent(
+            BrainEventType.BrainDecision, oldEpisode, 0.1, decisionId,
+            MissionId: "mission-delayed", RoundId: "round-delayed"));
+        // Terminal is intentionally queued first. The impact arrives in the
+        // same main-thread drain after EndEpisode has entered Resetting.
+        host.Events.Enqueue(new BrainGameEvent(
+            BrainEventType.MissionCompleted, oldEpisode, 1.0, decisionId,
+            MissionId: "mission-delayed", RoundId: "round-delayed", Amount: 1.0));
+        host.Events.Enqueue(new BrainGameEvent(
+            BrainEventType.TargetDamaged, oldEpisode, 12.0, null,
+            MissionId: "mission-delayed", RoundId: "round-delayed", Amount: 7.5));
+
+        runtime.Tick(12.0, 12.0);
+
+        AssertEx.Equal(BrainRuntimeState.Resetting, runtime.State,
+            "terminal event should enter reset while still accepting owned delayed impact");
+        AssertEx.Near(7.5, runtime.Episode.RewardTotal.DamageReward, 1e-12,
+            "impact that belongs to the terminal episode must remain in its reward");
+        AssertEx.True(runtime.DrainAudit().Any(x => x.Type == "REWARD_COMPONENT"),
+            "owned delayed impact must be auditable instead of silently dropped");
+    }
+
+    public static void RuntimeTerminalAndResetAreSingleFlight()
+    {
+        var session = NewRuntimeSession(out _);
+        var host = new FakeRuntimeHost { MissionReady = true };
+        var reset = new FakeResetDriver { CompleteOnTick = false };
+        var runtime = new BrainRuntimeCoordinator(session, host, new BrainPipeRequestQueue(), reset);
+        runtime.Start();
+        runtime.Tick(0.0, 0.0);
+
+        host.Events.Enqueue(new BrainGameEvent(BrainEventType.MissionCompleted, runtime.EpisodeId, 1.0,
+            runtime.PendingDecisionId, MissionId: null, RoundId: null));
+        host.Events.Enqueue(new BrainGameEvent(BrainEventType.MissionCompleted, runtime.EpisodeId, 1.1,
+            runtime.PendingDecisionId, MissionId: null, RoundId: null));
+        runtime.Tick(1.1, 1.1);
+
+        AssertEx.Equal(1, reset.RequestCount,
+            "duplicate terminal callbacks must produce one reset request");
+        var audit = runtime.DrainAudit();
+        AssertEx.Equal(1, audit.Count(x => x.Type == "RESET_START"),
+            "duplicate terminal callbacks must produce one RESET_START");
+        AssertEx.True(audit.Any(x => x.Type == "DUPLICATE_TERMINAL_IGNORED"),
+            "duplicate terminal callback must be explicitly ignored");
+    }
+
+    public static void InProcessPolicyUsesTheSameMaskedActionBoundary()
+    {
+        var session = NewRuntimeSession(out var executed);
+        var host = new FakeRuntimeHost { MissionReady = true };
+        var runtime = new BrainRuntimeCoordinator(
+            session,
+            host,
+            new BrainPipeRequestQueue(),
+            new FakeResetDriver(),
+            inProcessPolicy: new InProcessScriptedPolicy());
+
+        runtime.Start();
+        runtime.Tick(0.0, 0.0);
+
+        AssertEx.Equal(BrainActionKind.Engage, executed.Single().Kind,
+            "in-process bring-up policy must choose the first legal Engage");
+        AssertEx.Equal("Target", executed.Single().TrackId,
+            "in-process policy must use the track id from the legal mask");
+        AssertEx.True(runtime.PendingDecisionId == null,
+            "in-process policy must complete the same decision boundary as pipe actions");
+        AssertEx.True(runtime.DrainAudit().Any(x => x.Type == "ACTION_ACCEPTED"),
+            "in-process policy action must be audited as an accepted Brain action");
+    }
+
+    public static void RuntimeWaitingForMissionDoesNotResetOrSpam()
+    {
+        var session = NewRuntimeSession(out _);
+        var host = new FakeRuntimeHost { MissionReady = false };
+        var reset = new FakeResetDriver();
+        var runtime = new BrainRuntimeCoordinator(session, host, new BrainPipeRequestQueue(), reset);
+        runtime.Start();
+        runtime.Tick(0.0, 0.0);
+        runtime.Tick(1.0, 1.0);
+
+        AssertEx.Equal(BrainRuntimeState.WaitingForMission, runtime.State, "no active FireMission must remain idle");
+        AssertEx.Equal(0, reset.RequestCount, "waiting for mission must not trigger reset");
+        AssertEx.Equal(1, runtime.DrainAudit().Count(x => x.Type == "WAITING_FOR_MISSION"),
+            "waiting state should be logged once, not every frame");
+    }
+
+    public static void PipeDisconnectFallsBackToHoldAndReconnects()
+    {
+        using var queue = new BrainPipeRequestQueue();
+        var disconnected = queue.Handle(new BrainPipeRequest("observation", TimeoutMs: 25));
+        AssertEx.Equal("action", disconnected.Type, "a disconnected policy request must return the safe action envelope");
+        AssertEx.Equal(BrainActionKind.Hold, disconnected.ActionKind, "disconnect fallback must be Hold");
+
+        var reconnectTask = Task.Run(() => queue.Handle(new BrainPipeRequest("ping", TimeoutMs: 1000)));
+        BrainPipePendingRequest? pending = null;
+        AssertEx.True(SpinWait.SpinUntil(() =>
+        {
+            if (!queue.TryDequeue(out var next)) return false;
+            pending = next;
+            return true;
+        }, 1000), "main thread should drain the reconnect request");
+        pending!.Complete(BrainPipeResponse.Pong());
+        AssertEx.Equal("pong", reconnectTask.GetAwaiter().GetResult().Type,
+            "a new connection should work after a timed-out request");
+    }
+
+    public static void RuntimeDisposeIsIdempotentAndStopsTransport()
+    {
+        var session = NewRuntimeSession(out _);
+        var queue = new BrainPipeRequestQueue();
+        var runtime = new BrainRuntimeCoordinator(
+            session,
+            new FakeRuntimeHost { MissionReady = false },
+            queue,
+            new FakeResetDriver());
+
+        runtime.Start();
+        runtime.Dispose();
+        runtime.Dispose();
+
+        AssertEx.Equal(BrainRuntimeState.Disabled, runtime.State,
+            "dispose must leave runtime disabled");
+        AssertEx.True(queue.IsStopped, "dispose must stop the pipe queue");
+        var response = queue.Handle(new BrainPipeRequest("ping"));
+        AssertEx.Equal(BrainActionKind.Hold, response.ActionKind,
+            "requests after shutdown must degrade to Hold");
+    }
+
+    private static PlayerParityBrainSession NewRuntimeSession(out List<BrainAction> executed)
+    {
+        var actions = new List<BrainAction>();
+        executed = actions;
+        return new PlayerParityBrainSession(
+            0.0,
+            new ActionMask(true, new[] { "Target" }, false, false),
+            action =>
+            {
+                actions.Add(action);
+                return new BrainExecutionResult(true, "accepted") { MissionId = "mission-1" };
+            });
+    }
+
+    private sealed class FakeRuntimeHost : IBrainRuntimeHost
+    {
+        public bool MissionReady { get; set; }
+        public Queue<BrainGameEvent> Events { get; } = new();
+        public void RefreshObservation(double gameTimeSeconds) { }
+        public void RecordDecisionResult(string decisionId, BrainAction action, BrainExecutionResult result) { }
+        public IReadOnlyList<BrainGameEvent> DrainEvents()
+        {
+            var result = Events.ToArray();
+            Events.Clear();
+            return result;
+        }
+    }
+
+    private sealed class FakeResetDriver : IBrainResetDriver
+    {
+        public bool CompleteOnTick { get; set; }
+        public int RequestCount { get; private set; }
+        public BrainResetPhase Phase { get; private set; } = BrainResetPhase.Idle;
+        public string EpisodeId { get; private set; } = "episode";
+        private readonly List<BrainResetAuditEvent> auditEvents = new();
+        public IReadOnlyList<BrainResetAuditEvent> AuditEvents => auditEvents;
+
+        public bool RequestReset(double wallTimeSeconds)
+        {
+            RequestCount++;
+            auditEvents.Clear();
+            auditEvents.Add(new BrainResetAuditEvent("RESET_START", EpisodeId, wallTimeSeconds));
+            Phase = BrainResetPhase.WaitingForTeardown;
+            return true;
+        }
+
+        public void Tick(double wallTimeSeconds)
+        {
+            if (CompleteOnTick && Phase == BrainResetPhase.WaitingForTeardown)
+            {
+                auditEvents.Add(new BrainResetAuditEvent("OBJECT_TEARDOWN", EpisodeId, wallTimeSeconds));
+                auditEvents.Add(new BrainResetAuditEvent("NEW_MISSION_DETECTED", EpisodeId, wallTimeSeconds));
+                Phase = BrainResetPhase.Succeeded;
+                EpisodeId = $"episode:reset:{RequestCount}";
+                auditEvents.Add(new BrainResetAuditEvent("FSC_REBOUND", EpisodeId, wallTimeSeconds));
+                auditEvents.Add(new BrainResetAuditEvent("KNOWLEDGE_CLEARED", EpisodeId, wallTimeSeconds));
+                auditEvents.Add(new BrainResetAuditEvent("FIRST_OBSERVATION", EpisodeId, wallTimeSeconds));
+                auditEvents.Add(new BrainResetAuditEvent("RESET_SUCCESS", EpisodeId, wallTimeSeconds));
+            }
+        }
     }
 
     private sealed record HiddenEntityFixture(double XKm, double YKm, double Health, string State);
@@ -860,6 +1288,17 @@ public static class Program
             (nameof(BrainIntelTests.BrainPipeServerRoundTripsPingAndStopsCleanly), BrainIntelTests.BrainPipeServerRoundTripsPingAndStopsCleanly),
             (nameof(BrainIntelTests.ResetHarnessWaitsForTeardownAndNewMissionBeforeClearing), BrainIntelTests.ResetHarnessWaitsForTeardownAndNewMissionBeforeClearing),
             (nameof(BrainIntelTests.ResetHarnessTimesOutWithoutInfiniteWaiting), BrainIntelTests.ResetHarnessTimesOutWithoutInfiniteWaiting),
+            (nameof(BrainIntelTests.RuntimeCoordinatorRunsEpisodeAndResets), BrainIntelTests.RuntimeCoordinatorRunsEpisodeAndResets),
+            (nameof(BrainIntelTests.RuntimePolicyTimeoutFallsBackToHold), BrainIntelTests.RuntimePolicyTimeoutFallsBackToHold),
+            (nameof(BrainIntelTests.RuntimeRejectsStaleActionWithoutExecutingIt), BrainIntelTests.RuntimeRejectsStaleActionWithoutExecutingIt),
+            (nameof(BrainIntelTests.RuntimeDropsPreviousEpisodeEventAfterReset), BrainIntelTests.RuntimeDropsPreviousEpisodeEventAfterReset),
+            (nameof(BrainIntelTests.RuntimeResetTimeoutEntersSafeFailedState), BrainIntelTests.RuntimeResetTimeoutEntersSafeFailedState),
+            (nameof(BrainIntelTests.RuntimeKeepsDelayedImpactBeforeResetBoundary), BrainIntelTests.RuntimeKeepsDelayedImpactBeforeResetBoundary),
+            (nameof(BrainIntelTests.RuntimeTerminalAndResetAreSingleFlight), BrainIntelTests.RuntimeTerminalAndResetAreSingleFlight),
+            (nameof(BrainIntelTests.InProcessPolicyUsesTheSameMaskedActionBoundary), BrainIntelTests.InProcessPolicyUsesTheSameMaskedActionBoundary),
+            (nameof(BrainIntelTests.RuntimeWaitingForMissionDoesNotResetOrSpam), BrainIntelTests.RuntimeWaitingForMissionDoesNotResetOrSpam),
+            (nameof(BrainIntelTests.PipeDisconnectFallsBackToHoldAndReconnects), BrainIntelTests.PipeDisconnectFallsBackToHoldAndReconnects),
+            (nameof(BrainIntelTests.RuntimeDisposeIsIdempotentAndStopsTransport), BrainIntelTests.RuntimeDisposeIsIdempotentAndStopsTransport),
         };
 
         foreach (var test in tests)

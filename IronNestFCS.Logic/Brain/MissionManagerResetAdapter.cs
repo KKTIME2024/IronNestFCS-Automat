@@ -9,7 +9,7 @@ namespace IronNestFCS.Logic.Brain;
 /// public MissionManager API. It deliberately observes only mission lifecycle
 /// signals; it never exposes MissionGraph or any entity data to Brain.
 /// </summary>
-public sealed class MissionManagerResetAdapter
+public sealed class MissionManagerResetAdapter : IBrainResetDriver
 {
     private readonly BrainResetHarness harness;
     private readonly string? expectedMissionSceneName;
@@ -39,6 +39,7 @@ public sealed class MissionManagerResetAdapter
     public BrainResetHarness Harness => harness;
     public BrainResetPhase Phase => harness.Phase;
     public string EpisodeId => harness.CurrentEpisodeId;
+    public IReadOnlyList<BrainResetAuditEvent> AuditEvents => harness.AuditEvents;
 
     /// <summary>
     /// Requests the game's own current-mission reload. Call only from Unity's
