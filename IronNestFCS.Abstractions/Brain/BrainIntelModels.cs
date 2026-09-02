@@ -53,8 +53,6 @@ public sealed record TrackIntel
     public MotionIntel? Motion { get; init; }
     public IReadOnlyList<RouteWaypointIntel> Route { get; init; } = Array.Empty<RouteWaypointIntel>();
     public double? EstimatedArrivalSeconds { get; init; }
-    public int? KnownHealth { get; init; }
-    public bool? DestroyedConfirmed { get; init; }
 }
 
 /// <summary>电报适配器输出的语义事件；不携带 GameObject、MapEntity 或任何 IL2CPP 引用。</summary>
@@ -84,8 +82,6 @@ public sealed record TrackSnapshot
         MotionIntel? motion,
         IReadOnlyList<RouteWaypointIntel> route,
         double? estimatedArrivalSeconds,
-        int? knownHealth,
-        bool? destroyedConfirmed,
         double lastUpdatedAtSeconds)
     {
         TrackId = trackId;
@@ -97,8 +93,6 @@ public sealed record TrackSnapshot
         Motion = motion;
         Route = route;
         EstimatedArrivalSeconds = estimatedArrivalSeconds;
-        KnownHealth = knownHealth;
-        DestroyedConfirmed = destroyedConfirmed;
         LastUpdatedAtSeconds = lastUpdatedAtSeconds;
     }
 
@@ -111,8 +105,6 @@ public sealed record TrackSnapshot
     public MotionIntel? Motion { get; }
     public IReadOnlyList<RouteWaypointIntel> Route { get; }
     public double? EstimatedArrivalSeconds { get; }
-    public int? KnownHealth { get; }
-    public bool? DestroyedConfirmed { get; }
     public double LastUpdatedAtSeconds { get; }
 }
 

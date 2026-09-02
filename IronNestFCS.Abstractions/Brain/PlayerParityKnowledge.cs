@@ -113,8 +113,6 @@ public sealed class PlayerParityKnowledge
             intel.Motion,
             intel.Route.ToArray(),
             intel.EstimatedArrivalSeconds,
-            intel.KnownHealth,
-            intel.DestroyedConfirmed,
             intel.Provenance.ReceivedAtSeconds);
     }
 
@@ -130,8 +128,6 @@ public sealed class PlayerParityKnowledge
             intel.Motion ?? previous.Motion,
             intel.Route.Count == 0 ? previous.Route : intel.Route.ToArray(),
             intel.EstimatedArrivalSeconds ?? previous.EstimatedArrivalSeconds,
-            intel.KnownHealth ?? previous.KnownHealth,
-            intel.DestroyedConfirmed ?? previous.DestroyedConfirmed,
             intel.Provenance.ReceivedAtSeconds);
     }
 }
