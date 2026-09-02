@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>IronNestFCS.Brain.Tests</AssemblyName>
+    <UseAppHost>false</UseAppHost>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\IronNestFCS.Abstractions\IronNestFCS.Abstractions.csproj" />
