@@ -15,6 +15,7 @@ Updated 2026-09-02. This is the first implementation slice; no PPO or ML runtime
 - Added `PlayerParityMapGridAdapter`: a printed grid is converted through `GridCodeConverter` and public `FireMission` map geometry only. It never enumerates `FireMission.Entities` and can produce either parity `MapPoint` coordinates or a world-space point for the future actuator.
 - Added explicit action-mask refresh: a track with course/speed but no legal map position remains visible but cannot be selected by `Engage`; a track becomes engageable only after a legal map position is attached. Reserved tracks are removed from the mask while their position mission is active.
 - Added an opt-in `PlayerParityActionBridge` (`IRONNEST_BRAIN_ACTUATOR=1` or `brain-actuator.enabled`, together with the telegram switch). `Engage(track_id)` predicts from the legal track, maps it through public geometry, and submits a `Mission` with an empty `EntityId`; no radar/entity lookup is part of this path. The bridge is main-thread-only and defaults to disabled.
+- With the actuator enabled, `Numpad7` is a one-shot smoke trigger for the first currently legal `Engage` action. It still goes through `BrainFacade` and strict masking; it is not an automated policy.
 - Added an opt-in polling `MissionStatsRuntimeProbe` (`IRONNEST_BRAIN_REWARD=1` or `brain-reward.enabled`) based on the public `MissionStatsTracker.mission` counters and `missionEnded`. It emits auditable counter deltas and reset/end edges; it does not infer target identity or read enemy state.
 
 ## Verification
