@@ -66,6 +66,75 @@ public sealed class PlayerParityBrainSession : IBrainFacade
     }
 
     /// <summary>
+    /// Accept a player-visible map reveal/marker position. The Logic adapter
+    /// must obtain the position from the same map surface a player can inspect;
+    /// this method does not accept entities, health, velocity, or hidden state.
+    /// </summary>
+    public bool IngestMapReveal(
+        string trackId,
+        string sourceId,
+        double receivedAtSeconds,
+        MapPoint position,
+        string evidence,
+        string? reportedGrid = null,
+        double? reportedAtSeconds = null,
+        IntelTimeBasis reportedTimeBasis = IntelTimeBasis.SessionSeconds)
+    {
+        ArgumentNullException.ThrowIfNull(trackId);
+        ArgumentNullException.ThrowIfNull(sourceId);
+        ArgumentNullException.ThrowIfNull(evidence);
+
+        var accepted = Knowledge.Apply(new TrackIntel(
+            trackId,
+            new IntelProvenance(
+                IntelSourceKind.MapReveal,
+                sourceId,
+                receivedAtSeconds,
+                evidence))
+        {
+            ReportedPosition = position,
+            ReportedGrid = reportedGrid,
+            ReportedAtSeconds = reportedAtSeconds ?? receivedAtSeconds,
+            ReportedTimeBasis = reportedTimeBasis,
+        });
+        SetDecisionContext(receivedAtSeconds, currentActionMask);
+        return accepted;
+    }
+
+    /// <summary>
+    /// Merge a fact produced by a Logic-side player-parity adapter (for example,
+    /// converting an explicitly printed grid through the public map geometry).
+    /// OmniscientDebug remains rejected by <see cref="PlayerParityKnowledge"/>.
+    /// </summary>
+    public bool IngestLegalIntel(TrackIntel intel)
+    {
+        ArgumentNullException.ThrowIfNull(intel);
+        var accepted = Knowledge.Apply(intel);
+        SetDecisionContext(intel.Provenance.ReceivedAtSeconds, currentActionMask);
+        return accepted;
+    }
+
+    /// <summary>
+    /// Rebuild the high-level engage mask from facts that have an explicit
+    /// player-parity position. A course/speed-only telegram remains visible in
+    /// the observation but cannot become an Engage action until a legal map
+    /// reveal supplies a position.
+    /// </summary>
+    public void RefreshEngageableTracks(double? gameTimeSeconds = null)
+    {
+        var engageable = Knowledge.Snapshot()
+            .Where(x => x.ReportedPosition.HasValue
+                && !x.TrackId.StartsWith("route:", StringComparison.Ordinal))
+            .Select(x => x.TrackId);
+        var mask = new ActionMask(
+            currentActionMask.HoldAllowed,
+            engageable,
+            currentActionMask.ContinueCurrentMissionAllowed,
+            currentActionMask.AbortIfSafeAllowed);
+        SetDecisionContext(gameTimeSeconds ?? facade.GetObservation().GameTimeSeconds, mask);
+    }
+
+    /// <summary>
     /// Logic 层在合法事件决策点更新游戏时钟和动作掩码。
     /// </summary>
     public void SetDecisionContext(double gameTimeSeconds, ActionMask actionMask)

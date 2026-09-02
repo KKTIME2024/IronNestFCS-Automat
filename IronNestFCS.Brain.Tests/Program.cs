@@ -365,6 +365,32 @@ static class BrainIntelTests
         AssertEx.True(!session.IsTerminal, "episode reset must clear terminal state");
     }
 
+    public static void PlayerParitySessionAcceptsExplicitMapRevealPosition()
+    {
+        var session = new PlayerParityBrainSession(
+            initialGameTimeSeconds: 0.0,
+            initialActionMask: new ActionMask(true, Array.Empty<string>(), false, false),
+            executeAction: _ => new BrainExecutionResult(true, "test sink"));
+
+        AssertEx.True(session.IngestMapReveal(
+                trackId: "Ship",
+                sourceId: "map-marker:1",
+                receivedAtSeconds: 20.0,
+                position: new MapPoint(3.0, 4.0),
+                evidence: "player-visible marker at G6 9:1",
+                reportedGrid: "G6 9:1"),
+            "explicit player-visible map position should be accepted");
+        AssertEx.True(session.Knowledge.TryGet("Ship", out var snapshot), "map reveal should create a track");
+        AssertEx.Equal(IntelSourceKind.MapReveal, snapshot!.LatestProvenance.Kind,
+            "map reveal provenance must remain auditable");
+        AssertEx.Equal(new MapPoint(3.0, 4.0), snapshot.ReportedPosition,
+            "map reveal position must be preserved exactly");
+
+        session.RefreshEngageableTracks();
+        AssertEx.True(session.GetValidActions().Allows(new BrainAction(BrainActionKind.Engage, "Ship")),
+            "only tracks with legal positions should become engageable");
+    }
+
     public static void TransitionPublishesRewardAndTerminalState()
     {
         var observation = new BrainObservation(
@@ -414,6 +440,7 @@ public static class Program
             (nameof(BrainIntelTests.ObservationContainsOnlyKnowledgeSnapshots), BrainIntelTests.ObservationContainsOnlyKnowledgeSnapshots),
             (nameof(BrainIntelTests.FacadeMasksBeforeCallingActuator), BrainIntelTests.FacadeMasksBeforeCallingActuator),
             (nameof(BrainIntelTests.PlayerParitySessionIngestsTelegramAndResetsKnowledge), BrainIntelTests.PlayerParitySessionIngestsTelegramAndResetsKnowledge),
+            (nameof(BrainIntelTests.PlayerParitySessionAcceptsExplicitMapRevealPosition), BrainIntelTests.PlayerParitySessionAcceptsExplicitMapRevealPosition),
             (nameof(BrainIntelTests.TransitionPublishesRewardAndTerminalState), BrainIntelTests.TransitionPublishesRewardAndTerminalState),
         };
 
