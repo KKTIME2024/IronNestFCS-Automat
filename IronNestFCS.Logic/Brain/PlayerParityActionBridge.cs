@@ -37,10 +37,9 @@ public sealed class PlayerParityActionBridge
 
     /// <summary>Opt-in switch; no actuator is connected by default.</summary>
     public static bool Enabled =>
-        string.Equals(
-            Environment.GetEnvironmentVariable("IRONNEST_BRAIN_ACTUATOR"),
-            "1",
-            StringComparison.Ordinal);
+        BrainExperimentFlags.IsEnabled(
+            "IRONNEST_BRAIN_ACTUATOR",
+            "brain-actuator.enabled");
 
     /// <summary>
     /// Rebuilds the action mask using only legal tracks not already represented

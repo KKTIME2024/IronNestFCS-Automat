@@ -28,10 +28,9 @@ public sealed class MissionStatsRuntimeProbe : IDisposable
 
     /// <summary>Opt-in switch; reward sampling does not alter ordinary FCS.</summary>
     public static bool Enabled =>
-        string.Equals(
-            Environment.GetEnvironmentVariable("IRONNEST_BRAIN_REWARD"),
-            "1",
-            StringComparison.Ordinal);
+        BrainExperimentFlags.IsEnabled(
+            "IRONNEST_BRAIN_REWARD",
+            "brain-reward.enabled");
 
     /// <summary>Call from FcsModule.Update on Unity's main thread.</summary>
     public void Update()

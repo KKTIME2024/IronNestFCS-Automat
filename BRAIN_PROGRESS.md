@@ -11,11 +11,11 @@ Updated 2026-09-02. This is the first implementation slice; no PPO or ML runtime
 - Added `PlayerParityBrainSession`, which ingests visible telegram text, refreshes observations, and clears knowledge on episode reset.
 - Added an auditable transition history and explicit clock-domain handling: report `T:10:00:00` is not subtracted directly from Unity/episode seconds until a runtime adapter normalizes it.
 - Added a route-only parser guard: `TrainStation`/`WPA`/`WPB`/… are treated as map context, not silently as the moving train. If no moving designation is printed, the route is retained under an auditable `route:<sourceId>` identity.
-- Added an opt-in main-thread `Teleprinter` probe in Logic. Set `IRONNEST_BRAIN_TELEGRAM=1` to capture a `PrintJob` at queue completion (not at submission, so HumanTiming is preserved). The probe resolves the compiler-generated `<RunQueue>` state-machine type by name rather than a build-specific numeric suffix; the shipped game logged a successful hook install.
+- Added an opt-in main-thread `Teleprinter` probe in Logic. Set `IRONNEST_BRAIN_TELEGRAM=1`, or create `UserData/IronNestFCS/brain-telegram.enabled`, to capture a `PrintJob` at queue completion (not at submission, so HumanTiming is preserved). The probe resolves the compiler-generated `<RunQueue>` state-machine type by name rather than a build-specific numeric suffix; the shipped game logged a successful hook install.
 - Added `PlayerParityMapGridAdapter`: a printed grid is converted through `GridCodeConverter` and public `FireMission` map geometry only. It never enumerates `FireMission.Entities` and can produce either parity `MapPoint` coordinates or a world-space point for the future actuator.
 - Added explicit action-mask refresh: a track with course/speed but no legal map position remains visible but cannot be selected by `Engage`; a track becomes engageable only after a legal map position is attached. Reserved tracks are removed from the mask while their position mission is active.
-- Added an opt-in `PlayerParityActionBridge` (`IRONNEST_BRAIN_ACTUATOR=1`, together with the telegram switch). `Engage(track_id)` predicts from the legal track, maps it through public geometry, and submits a `Mission` with an empty `EntityId`; no radar/entity lookup is part of this path. The bridge is main-thread-only and defaults to disabled.
-- Added an opt-in polling `MissionStatsRuntimeProbe` (`IRONNEST_BRAIN_REWARD=1`) based on the public `MissionStatsTracker.mission` counters and `missionEnded`. It emits auditable counter deltas and reset/end edges; it does not infer target identity or read enemy state.
+- Added an opt-in `PlayerParityActionBridge` (`IRONNEST_BRAIN_ACTUATOR=1` or `brain-actuator.enabled`, together with the telegram switch). `Engage(track_id)` predicts from the legal track, maps it through public geometry, and submits a `Mission` with an empty `EntityId`; no radar/entity lookup is part of this path. The bridge is main-thread-only and defaults to disabled.
+- Added an opt-in polling `MissionStatsRuntimeProbe` (`IRONNEST_BRAIN_REWARD=1` or `brain-reward.enabled`) based on the public `MissionStatsTracker.mission` counters and `missionEnded`. It emits auditable counter deltas and reset/end edges; it does not infer target identity or read enemy state.
 
 ## Verification
 
@@ -23,6 +23,7 @@ Updated 2026-09-02. This is the first implementation slice; no PPO or ML runtime
 - Logic build with an output override: **0 errors, 21 existing warnings**.
 - Runtime smoke check: game loaded the deployed Logic/Abstractions assemblies and logged `[Brain] player-parity telegram capture enabled (job-complete timing)` with no `TypeLoadException`. The old hard-coded `<RunQueue>d__91` assumption was replaced after the live runtime exposed `<RunQueue>d__98`.
 - A follow-up launch with telegram/actuator/reward switches set exited with process code `53` and produced an empty newest bootstrap log; this is recorded as inconclusive, not as evidence that the new reward probe ran.
+- A marker-based launch (actual child process, 12:04) successfully logged all three opt-ins: `PlayerParity high-level actuator enabled`, `player-parity telegram capture enabled`, and `native mission outcome sampling enabled`; no Brain exception was logged. The game was stopped at the expected pre-mission scene-bind failure, and temporary markers were removed afterward.
 - The test project is now included in `IronNestFCS.sln`.
 
 ## Not yet measured / not yet implemented

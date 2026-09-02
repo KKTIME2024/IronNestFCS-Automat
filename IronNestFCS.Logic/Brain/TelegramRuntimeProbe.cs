@@ -36,10 +36,9 @@ public sealed class TelegramRuntimeProbe : IDisposable
 
     /// <summary>Opt-in switch so ordinary FCS use remains unchanged.</summary>
     public static bool Enabled =>
-        string.Equals(
-            Environment.GetEnvironmentVariable("IRONNEST_BRAIN_TELEGRAM"),
-            "1",
-            StringComparison.Ordinal);
+        BrainExperimentFlags.IsEnabled(
+            "IRONNEST_BRAIN_TELEGRAM",
+            "brain-telegram.enabled");
 
     public void Install()
     {
