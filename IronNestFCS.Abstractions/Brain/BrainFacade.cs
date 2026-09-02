@@ -7,6 +7,7 @@ namespace IronNestFCS.Abstractions.Brain;
 public sealed class BrainFacade : IBrainFacade
 {
     private readonly Func<BrainAction, BrainExecutionResult> executeAction;
+    private readonly List<BrainTransition> transitionHistory = new();
     private BrainObservation observation;
     private bool terminal;
 
@@ -21,6 +22,8 @@ public sealed class BrainFacade : IBrainFacade
     public BrainObservation GetObservation() => observation;
 
     public BrainTransition? LastTransition { get; private set; }
+
+    public IReadOnlyList<BrainTransition> TransitionHistory => transitionHistory;
 
     public bool IsTerminal => terminal;
 
@@ -42,7 +45,7 @@ public sealed class BrainFacade : IBrainFacade
             result = executeAction(action);
         }
 
-        LastTransition = new BrainTransition(
+        var transition = new BrainTransition(
             observation,
             action,
             result,
@@ -50,6 +53,8 @@ public sealed class BrainFacade : IBrainFacade
             new RewardBreakdown(),
             null,
             terminal);
+        LastTransition = transition;
+        transitionHistory.Add(transition);
         return result;
     }
 
@@ -69,13 +74,15 @@ public sealed class BrainFacade : IBrainFacade
 
         if (LastTransition is { } previous)
         {
-            LastTransition = previous with
+            var updated = previous with
             {
                 GameEvents = gameEvents?.ToArray() ?? Array.Empty<string>(),
                 Reward = reward,
                 NextObservation = nextObservation,
                 Terminal = terminal,
             };
+            LastTransition = updated;
+            transitionHistory[^1] = updated;
         }
     }
 
@@ -89,5 +96,6 @@ public sealed class BrainFacade : IBrainFacade
     {
         terminal = false;
         LastTransition = null;
+        transitionHistory.Clear();
     }
 }

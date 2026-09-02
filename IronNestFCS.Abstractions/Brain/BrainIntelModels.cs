@@ -10,6 +10,17 @@ public enum IntelSourceKind
 }
 
 /// <summary>
+/// 报文中的时间可能是任务时钟，也可能是钟表时间（例如 10:06:50）。
+/// 明确区分两者，避免把绝对钟表秒数和 episode 秒数直接相减。
+/// </summary>
+public enum IntelTimeBasis
+{
+    SessionSeconds,
+    ClockOfDaySeconds,
+    Unknown,
+}
+
+/// <summary>
 /// 情报来源审计信息。Evidence 只应描述玩家实际看到的证据，不能填充隐藏实体真值。
 /// </summary>
 public sealed record IntelProvenance(
@@ -49,7 +60,10 @@ public sealed record TrackIntel
     public string? DisplayName { get; init; }
     public string? ReportedGrid { get; init; }
     public MapPoint? ReportedPosition { get; init; }
+    /// <summary>显式的路线/航向方位；不是从隐藏实体速度反推的字段。</summary>
+    public double? ReportedBearingDegrees { get; init; }
     public double? ReportedAtSeconds { get; init; }
+    public IntelTimeBasis ReportedTimeBasis { get; init; } = IntelTimeBasis.SessionSeconds;
     public MotionIntel? Motion { get; init; }
     public IReadOnlyList<RouteWaypointIntel> Route { get; init; } = Array.Empty<RouteWaypointIntel>();
     public double? EstimatedArrivalSeconds { get; init; }
@@ -101,7 +115,9 @@ public sealed record TrackSnapshot
     public string? DisplayName { get; }
     public string? ReportedGrid { get; }
     public MapPoint? ReportedPosition { get; }
+    public double? ReportedBearingDegrees { get; init; }
     public double? ReportedAtSeconds { get; }
+    public IntelTimeBasis ReportedTimeBasis { get; init; }
     public MotionIntel? Motion { get; }
     public IReadOnlyList<RouteWaypointIntel> Route { get; }
     public double? EstimatedArrivalSeconds { get; }

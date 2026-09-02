@@ -112,6 +112,7 @@ public interface IBrainFacade
     BrainObservation GetObservation();
     BrainExecutionResult SubmitDecision(BrainAction action);
     BrainTransition? LastTransition { get; }
+    IReadOnlyList<BrainTransition> TransitionHistory { get; }
     bool IsTerminal { get; }
     void ResetEpisode();
 }

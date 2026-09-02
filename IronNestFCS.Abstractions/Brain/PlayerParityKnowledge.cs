@@ -72,13 +72,37 @@ public sealed class PlayerParityKnowledge
         out TrackEstimate? estimate,
         double baseUncertaintyKm = DefaultBaseUncertaintyKm,
         double uncertaintyGrowthKmPerSecond = DefaultUncertaintyGrowthKmPerSecond)
+        => TryEstimateAt(
+            trackId,
+            nowSeconds,
+            out estimate,
+            baseUncertaintyKm,
+            uncertaintyGrowthKmPerSecond);
+
+    /// <summary>
+    /// 预测到任意未来决策/击发/落地时刻。
+    /// forecastAtSeconds 通常由“现在 + 剩余装填/转炮 + 弹丸飞行时间”组成；
+    /// 仍然只从最后一份合法报告外推，绝不重采样真实实体。
+    /// </summary>
+    public bool TryEstimateAt(
+        string trackId,
+        double forecastAtSeconds,
+        out TrackEstimate? estimate,
+        double baseUncertaintyKm = DefaultBaseUncertaintyKm,
+        double uncertaintyGrowthKmPerSecond = DefaultUncertaintyGrowthKmPerSecond)
     {
         estimate = null;
         if (!TryGet(trackId, out var snapshot) || snapshot == null)
             return false;
 
-        var reportTime = snapshot.ReportedAtSeconds ?? snapshot.LastUpdatedAtSeconds;
-        var age = Math.Max(0.0, nowSeconds - reportTime);
+        // A parsed telegram clock (for example 10:00:00) is not in the same
+        // domain as Unity/episode seconds. Until a runtime adapter explicitly
+        // normalizes it, use receipt time as the conservative session anchor.
+        var reportTime = snapshot.ReportedTimeBasis == IntelTimeBasis.SessionSeconds
+            && snapshot.ReportedAtSeconds.HasValue
+            ? snapshot.ReportedAtSeconds.Value
+            : snapshot.LastUpdatedAtSeconds;
+        var age = Math.Max(0.0, forecastAtSeconds - reportTime);
         MapPoint? position = snapshot.ReportedPosition;
         if (position.HasValue && snapshot.Motion is { } motion)
         {
@@ -113,12 +137,16 @@ public sealed class PlayerParityKnowledge
             intel.Motion,
             intel.Route.ToArray(),
             intel.EstimatedArrivalSeconds,
-            intel.Provenance.ReceivedAtSeconds);
+            intel.Provenance.ReceivedAtSeconds)
+        {
+            ReportedBearingDegrees = intel.ReportedBearingDegrees,
+            ReportedTimeBasis = intel.ReportedTimeBasis,
+        };
     }
 
     private static TrackSnapshot Merge(TrackSnapshot previous, TrackIntel intel)
     {
-        return new TrackSnapshot(
+        var snapshot = new TrackSnapshot(
             previous.TrackId,
             intel.Provenance,
             intel.DisplayName ?? previous.DisplayName,
@@ -128,6 +156,13 @@ public sealed class PlayerParityKnowledge
             intel.Motion ?? previous.Motion,
             intel.Route.Count == 0 ? previous.Route : intel.Route.ToArray(),
             intel.EstimatedArrivalSeconds ?? previous.EstimatedArrivalSeconds,
-            intel.Provenance.ReceivedAtSeconds);
+            intel.Provenance.ReceivedAtSeconds)
+        {
+            ReportedBearingDegrees = intel.ReportedBearingDegrees ?? previous.ReportedBearingDegrees,
+            ReportedTimeBasis = intel.ReportedAtSeconds.HasValue
+                ? intel.ReportedTimeBasis
+                : previous.ReportedTimeBasis,
+        };
+        return snapshot;
     }
 }

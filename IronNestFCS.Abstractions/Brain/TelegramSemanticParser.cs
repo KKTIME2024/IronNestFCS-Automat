@@ -10,7 +10,7 @@ namespace IronNestFCS.Abstractions.Brain;
 public static class TelegramSemanticParser
 {
     private static readonly Regex PointRegex = new(
-        @"\[POINT\s+<?(?<id>[A-Za-z0-9_:#-]+)>?\]",
+        @"\[POINT\s+(?:[<{])?(?<id>[A-Za-z0-9_:#\-\s]+?)(?:[>}]?)\]",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex GridRegex = new(
@@ -22,19 +22,23 @@ public static class TelegramSemanticParser
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex MotionRegex = new(
-        @"\bcourse(?:\s+of)?\s+(?<course>\d+(?:\.\d+)?)\s*[°º]\s+at\s+(?<speed>\d+(?:\.\d+)?)\s+knots\b",
+        @"(?:\bcourse(?:\s+of)?\s+(?<course>\d+(?:[.,]\d+)?)\s*[°º]\s+at\s+(?<speed>\d+(?:[.,]\d+)?)\s+knots\b|(?<speed>\d+(?:[.,]\d+)?)\s*节[^\r\n]{0,24}?(?<course>\d+(?:[.,]\d+)?)\s*[°º]\s*航向)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex BearingRegex = new(
+        @"(?:\bbearing\b|\bazimuth\b|\bpeilung\b|方位角)\s*(?:is\s*)?(?<bearing>\d+(?:[.,]\d+)?)\s*[°º]",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex WaypointRegex = new(
-        @"\[POINT\s+<?(?<id>WP[A-Z]|Waypoint-[A-Za-z0-9-]+)>?\].*?(?<distance>\d+(?:\.\d+)?)\s*km.*?\bT\s*=\s*(?<time>\d{1,2}:\d{2}:\d{2})",
+        @"\[POINT\s+(?:[<{])?(?<id>WP[A-Z]|Waypoint-[A-Za-z0-9-]+)(?:[>}]?)\].*?(?<distance>\d+(?:[.,]\d+)?)\s*km.*?\bT\s*=\s*(?<time>\d{1,2}:\d{2}:\d{2})",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex ArrivalRegex = new(
-        @"(?im)^\s*(?:estimated\s+)?arrival\s*:?[^\r\n]*?\bT\s*=\s*(?<time>\d{1,2}:\d{2}:\d{2})",
+        @"(?im)^\s*(?:estimated\s+)?(?:arrival|到达|抵达|到站)\s*[:：]?[^\r\n]*?\bT\s*=\s*(?<time>\d{1,2}:\d{2}:\d{2})",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-    private static readonly Regex KnotRegex = new(
-        @"(?<speed>\d+(?:\.\d+)?)\s+knots\s*=\s*(?<distance>\d+(?:\.\d+)?)\s*km\s+traveled\s+in\s+(?<duration>\d+(?:\.\d+)?)\s*s",
+    private static readonly Regex FutureEventRegex = new(
+        @"(?is)(?:intercept|beach\s+landing|landing|拦截|登陆|滩头).{0,240}?(?:\bT\s*[:=]\s*)?(?<time>\d{1,2}:\d{2}:\d{2})",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>
@@ -51,21 +55,33 @@ public static class TelegramSemanticParser
             receivedAtSeconds,
             visibleText);
 
-        var pointMatches = PointRegex.Matches(visibleText);
-        var trackId = pointMatches.Count == 0 ? null : Clean(pointMatches[0].Groups["id"].Value);
-        if (string.IsNullOrWhiteSpace(trackId))
-            return new TelegramSemanticEvent(sourceId, receivedAtSeconds, Array.Empty<TrackIntel>(), visibleText);
-
         var grid = GridRegex.Match(visibleText);
         var clock = ClockRegex.Match(visibleText);
         var motion = ParseMotion(visibleText);
         var route = ParseRoute(visibleText);
-        var arrival = ParseArrival(visibleText);
+        var arrival = ParseArrival(visibleText) ?? ParseFutureEvent(visibleText);
+        var bearing = ParseBearing(visibleText);
+
+        // POINT is overloaded by the mission text: stations and route waypoints
+        // are visible map context, not the moving unit. Prefer an explicit unit
+        // designation; for a route-only report retain the schedule under a
+        // synthetic, auditable source-scoped id rather than inventing identity.
+        var pointMatches = PointRegex.Matches(visibleText);
+        var trackId = pointMatches
+            .Select(x => Clean(x.Groups["id"].Value))
+            .FirstOrDefault(x => !IsInfrastructurePoint(x));
+        if (string.IsNullOrWhiteSpace(trackId)
+            && route.Count == 0
+            && arrival is null)
+            return new TelegramSemanticEvent(sourceId, receivedAtSeconds, Array.Empty<TrackIntel>(), visibleText);
+        trackId ??= $"route:{sourceId}";
 
         var track = new TrackIntel(trackId, provenance)
         {
             ReportedGrid = grid.Success ? Clean(grid.Groups["grid"].Value) : null,
+            ReportedBearingDegrees = bearing,
             ReportedAtSeconds = clock.Success ? ParseClock(clock.Groups["time"].Value) : null,
+            ReportedTimeBasis = clock.Success ? IntelTimeBasis.ClockOfDaySeconds : IntelTimeBasis.Unknown,
             Motion = motion,
             Route = route,
             EstimatedArrivalSeconds = arrival,
@@ -82,13 +98,12 @@ public static class TelegramSemanticParser
     {
         var match = MotionRegex.Match(text);
         if (!match.Success
-            || !double.TryParse(match.Groups["course"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var course)
-            || !double.TryParse(match.Groups["speed"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var speedKnots)
+            || !TryParseNumber(match.Groups["course"].Value, out var course)
+            || !TryParseNumber(match.Groups["speed"].Value, out var speedKnots)
             || speedKnots < 0.0)
             return null;
 
-        course %= 360.0;
-        if (course < 0.0) course += 360.0;
+        course = NormalizeDegrees(course);
 
         // 1 knot = one nautical mile/hour; use the same physical conversion for offline and runtime logic.
         var speedKmPerSecond = speedKnots * 1.852 / 3600.0;
@@ -100,7 +115,7 @@ public static class TelegramSemanticParser
         var route = new List<RouteWaypointIntel>();
         foreach (Match match in WaypointRegex.Matches(text))
         {
-            if (!double.TryParse(match.Groups["distance"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var distance)
+            if (!TryParseNumber(match.Groups["distance"].Value, out var distance)
                 || !TryParseClock(match.Groups["time"].Value, out var passageTime))
                 continue;
 
@@ -121,6 +136,23 @@ public static class TelegramSemanticParser
         return seconds;
     }
 
+    private static double? ParseFutureEvent(string text)
+    {
+        var matches = FutureEventRegex.Matches(text);
+        if (matches.Count == 0
+            || !TryParseClock(matches[^1].Groups["time"].Value, out var seconds))
+            return null;
+        return seconds;
+    }
+
+    private static double? ParseBearing(string text)
+    {
+        var match = BearingRegex.Match(text);
+        return match.Success && TryParseNumber(match.Groups["bearing"].Value, out var bearing)
+            ? NormalizeDegrees(bearing)
+            : null;
+    }
+
     private static double ParseClock(string value)
     {
         return TryParseClock(value, out var seconds) ? seconds : 0.0;
@@ -139,8 +171,30 @@ public static class TelegramSemanticParser
         return false;
     }
 
+    private static bool TryParseNumber(string value, out double number)
+    {
+        return double.TryParse(
+            value.Replace(',', '.'),
+            NumberStyles.Float,
+            CultureInfo.InvariantCulture,
+            out number);
+    }
+
+    private static double NormalizeDegrees(double value)
+    {
+        value %= 360.0;
+        return value < 0.0 ? value + 360.0 : value;
+    }
+
     private static string Clean(string value)
     {
         return value.Trim().Trim('<', '>').Trim();
+    }
+
+    private static bool IsInfrastructurePoint(string id)
+    {
+        return id.Equals("TrainStation", StringComparison.OrdinalIgnoreCase)
+            || id.StartsWith("WP", StringComparison.OrdinalIgnoreCase)
+            || id.StartsWith("Waypoint-", StringComparison.OrdinalIgnoreCase);
     }
 }

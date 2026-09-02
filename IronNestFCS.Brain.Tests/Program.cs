@@ -78,6 +78,8 @@ static class BrainIntelTests
         AssertEx.Equal(12.0, track.Motion!.CourseDegrees, "course must be preserved");
         AssertEx.Near(9.7 / 3600.0 * 1.852, track.Motion.SpeedKmPerSecond, 1e-12, "knots must convert to km/s");
         AssertEx.Equal(10 * 3600.0, track.ReportedAtSeconds, "report time must be parsed");
+        AssertEx.Equal(IntelTimeBasis.ClockOfDaySeconds, track.ReportedTimeBasis,
+            "telegram clock must not be confused with the episode clock");
         AssertEx.True(track.Provenance.IsPlayerParity, "parsed text is a player-parity source");
     }
 
@@ -105,6 +107,29 @@ static class BrainIntelTests
         AssertEx.Equal(10 * 3600.0 + 16 * 60.0 + 50.0, track.EstimatedArrivalSeconds, "arrival time must be retained");
     }
 
+    public static void RouteTelegramDoesNotInventTrainFromDestinationPoint()
+    {
+        // The real Iron Road/Final Harvest shape names the station and waypoints,
+        // but does not necessarily print a separate moving-unit point designation.
+        // A destination marker must not silently become the train's identity.
+        var text = string.Join("\n", new[]
+        {
+            "TRAIN SCHEDULE",
+            "Arrival station [POINT TrainStation]: [GRID A3].",
+            "[POINT WPA] - 3.00km from station: T=10:06:50",
+            "[POINT WPB] - 1.00km from station: T=10:10:10",
+            "Arrival: T=10:16:50",
+        });
+
+        var message = TelegramSemanticParser.Parse("hq:iron-road-real", 10.0, text);
+
+        AssertEx.Equal(1, message.Tracks.Count, "route-only telegram should still produce one route fact");
+        AssertEx.Equal("route:hq:iron-road-real", message.Tracks[0].TrackId,
+            "station/waypoint markers must not be mislabelled as the moving unit");
+        AssertEx.Equal(2, message.Tracks[0].Route.Count, "route waypoints must be retained");
+        AssertEx.Equal("A3", message.Tracks[0].ReportedGrid, "station grid remains visible route context");
+    }
+
     public static void MissingMotionTextDoesNotCreateVelocity()
     {
         var message = TelegramSemanticParser.Parse(
@@ -114,6 +139,104 @@ static class BrainIntelTests
 
         AssertEx.Equal(1, message.Tracks.Count, "designation alone should still create a track");
         AssertEx.True(message.Tracks[0].Motion == null, "no explicit motion must remain unknown");
+    }
+
+    public static void HighTideTelegramPreservesFutureInterceptTime()
+    {
+        var text = string.Join("\n", new[]
+        {
+            "[POINT Vessel-7] SPOTTED:",
+            "CROSSING [GRID H4 2:3] AT T:10:00:00.",
+            "STEAMING AT A COURSE OF 180° AT 19.4 KNOTS.",
+            "INTERCEPT [POINT Vessel-7] ON COURSE OR PREPARE FOR BEACH LANDING AT:",
+            "T:10:08:20 5KM & 180° FROM [GRID H4 2:3]",
+        });
+
+        var message = TelegramSemanticParser.Parse("hq:high-tide", 100.0, text);
+
+        var track = message.Tracks.Single();
+        AssertEx.True(track.Motion != null, "high tide course/speed must be parsed");
+        AssertEx.Equal(180.0, track.Motion!.CourseDegrees, "high tide course must be retained");
+        AssertEx.Near(19.4 * 1.852 / 3600.0, track.Motion.SpeedKmPerSecond, 1e-12, "knots must convert");
+        AssertEx.Equal(10 * 3600.0 + 8 * 60.0 + 20.0, track.EstimatedArrivalSeconds,
+            "future intercept time must remain available to a high-level planner");
+    }
+
+    public static void RouteTelegramCapturesRailBearingWithoutInventingSpeed()
+    {
+        var text = string.Join("\n", new[]
+        {
+            "[POINT TrainStation]: [GRID A3]",
+            "Rail line runs straight. Bearing 270° from [POINT TrainStation].",
+            "[POINT WPA] - 3.00km from station: T=10:06:50",
+            "[POINT WPB] - 1.00km from station: T=10:10:10",
+        });
+
+        var message = TelegramSemanticParser.Parse("hq:rail-bearing", 10.0, text);
+
+        var track = message.Tracks.Single();
+        AssertEx.Equal(270.0, track.ReportedBearingDegrees, "visible rail bearing must be retained");
+        AssertEx.True(track.Motion == null, "route timing alone must not be labelled as vessel speed");
+    }
+
+    public static void ChineseVesselTelegramParsesVisibleCourseAndSpeed()
+    {
+        var text = string.Join("\n", new[]
+        {
+            "[POINT Vessel-7]已发现：",
+            "在 T:10:00:00 时经过 [GRID H4 2:3]。",
+            "以19.4节速度航行180°航向。",
+        });
+
+        var message = TelegramSemanticParser.Parse("hq:high-tide-zh", 100.0, text);
+
+        var track = message.Tracks.Single();
+        AssertEx.True(track.Motion != null, "Chinese vessel text must expose motion facts");
+        AssertEx.Equal(180.0, track.Motion!.CourseDegrees, "Chinese course must be normalized");
+        AssertEx.Near(19.4 * 1.852 / 3600.0, track.Motion.SpeedKmPerSecond, 1e-12, "Chinese knots must convert");
+    }
+
+    public static void ChineseHighTideTelegramPreservesFutureTime()
+    {
+        var text = string.Join("\n", new[]
+        {
+            "[POINT Vessel-7]已发现：",
+            "在 T:10:00:00 时经过 [GRID H4 2:3]。",
+            "以19.4节速度航行180°航向。",
+            "拦截航行中的[POINT Vessel-7]，或准备在以下地点应对滩头登陆：",
+            "10:08:20 5千米，方位角180°。",
+        });
+
+        var message = TelegramSemanticParser.Parse("hq:high-tide-zh", 100.0, text);
+
+        AssertEx.Equal(10 * 3600.0 + 8 * 60.0 + 20.0,
+            message.Tracks.Single().EstimatedArrivalSeconds,
+            "Chinese future landing time must remain available");
+    }
+
+    public static void UnresolvedLocalizationTemplateIsNotTreatedAsIntel()
+    {
+        var message = TelegramSemanticParser.Parse(
+            "template:raw",
+            1.0,
+            "[POINT <{ID}>] SPOTTED at [GRID <{ID}>] T:[TIMER <MissionTime>].");
+
+        AssertEx.Equal(0, message.Tracks.Count, "unresolved placeholders are not player-visible facts");
+    }
+
+    public static void TelegramClockDoesNotFreezeEpisodeAge()
+    {
+        var message = TelegramSemanticParser.Parse(
+            "hq:clock-domain",
+            120.0,
+            "[POINT Vessel-7] at [GRID H4] T:10:00:00; course 180° at 10 knots.");
+        var knowledge = new PlayerParityKnowledge();
+        knowledge.Apply(message);
+
+        AssertEx.True(knowledge.TryEstimateAt("Vessel-7", 600.0, out var estimate),
+            "parsed telegram should create an estimable track");
+        AssertEx.Equal(480.0, estimate!.AgeSeconds,
+            "absolute telegram clock must not be subtracted from episode seconds");
     }
 
     public static void MovingTrackExtrapolatesFromLastLegalReport()
@@ -133,6 +256,28 @@ static class BrainIntelTests
         AssertEx.Near(-5.0, estimate.EstimatedPosition.Value.YKm, 1e-12, "southbound track should move five km");
         AssertEx.Equal(500.0, estimate.AgeSeconds, "estimate age must use report time");
         AssertEx.Near(0.55, estimate.UncertaintyKm, 1e-12, "uncertainty must grow with stale age");
+    }
+
+    public static void MovingTrackCanPredictAtFutureImpactTime()
+    {
+        var knowledge = new PlayerParityKnowledge();
+        knowledge.Apply(new TrackIntel(
+            "Ship",
+            new IntelProvenance(IntelSourceKind.Telegram, "hq:future", 100.0, "visible report"))
+        {
+            ReportedPosition = new MapPoint(0.0, 0.0),
+            ReportedAtSeconds = 100.0,
+            Motion = new MotionIntel(90.0, 0.01),
+        });
+
+        // A policy can ask for the predicted position at fire time + shell TOF
+        // without reading the live target after the report.
+        AssertEx.True(knowledge.TryEstimateAt("Ship", 600.0, out var estimate),
+            "future impact prediction should use the legal report");
+        AssertEx.Near(5.0, estimate!.EstimatedPosition!.Value.XKm, 1e-12,
+            "eastbound track should be projected to future impact time");
+        AssertEx.Near(0.55, estimate.UncertaintyKm, 1e-12,
+            "future projection uncertainty must use forecast age");
     }
 
     public static void BrainActionsAreSemanticAndStrictlyMasked()
@@ -194,6 +339,54 @@ static class BrainIntelTests
         AssertEx.Equal(1, actuatorCalls, "legal action should be submitted exactly once");
         AssertEx.True(facade.LastTransition != null, "facade must retain an audit transition");
         AssertEx.Equal(BrainActionKind.Hold, facade.LastTransition!.Action.Kind, "audit must retain chosen action");
+        AssertEx.Equal(2, facade.TransitionHistory.Count, "every decision, including a masked one, must be auditable");
+    }
+
+    public static void PlayerParitySessionIngestsTelegramAndResetsKnowledge()
+    {
+        var session = new PlayerParityBrainSession(
+            initialGameTimeSeconds: 0.0,
+            initialActionMask: new ActionMask(true, Array.Empty<string>(), false, false),
+            executeAction: _ => new BrainExecutionResult(true, "test sink"));
+
+        session.IngestTelegram(
+            "hq:session",
+            10.0,
+            "[POINT Ship] crossing [GRID G6 9:1] at T:10:00:00; course 180° at 10 knots.");
+
+        AssertEx.Equal(1, session.Knowledge.Count, "visible telegram should enter session knowledge");
+        AssertEx.Equal(1, session.GetObservation().Tracks.Count, "observation should refresh after telegram");
+        AssertEx.Equal(10.0, session.GetObservation().GameTimeSeconds, "telegram receipt time should advance context");
+
+        session.ResetEpisode();
+
+        AssertEx.Equal(0, session.Knowledge.Count, "episode reset must clear legal knowledge");
+        AssertEx.Equal(0, session.GetObservation().Tracks.Count, "episode reset must hide prior tracks");
+        AssertEx.True(!session.IsTerminal, "episode reset must clear terminal state");
+    }
+
+    public static void TransitionPublishesRewardAndTerminalState()
+    {
+        var observation = new BrainObservation(
+            0.0,
+            Array.Empty<TrackSnapshot>(),
+            new ActionMask(true, Array.Empty<string>(), false, false));
+        var facade = new BrainFacade(observation,
+            _ => new BrainExecutionResult(true, "accepted"));
+
+        facade.SubmitDecision(new BrainAction(BrainActionKind.Hold));
+        var reward = new RewardBreakdown(DamageReward: 2.0, TargetDestroyedReward: 5.0);
+        var nextObservation = new BrainObservation(
+            1.0,
+            Array.Empty<TrackSnapshot>(),
+            observation.ActionMask);
+        facade.PublishNextObservation(nextObservation, new[] { "shot-fired" }, reward, terminal: true);
+
+        AssertEx.True(facade.IsTerminal, "terminal publication must close the episode");
+        AssertEx.Equal(7.0, facade.LastTransition!.Reward.Total, "reward components must aggregate");
+        AssertEx.Equal("shot-fired", facade.LastTransition.GameEvents.Single(), "game events must be audited");
+        AssertEx.Equal(1.0, facade.TransitionHistory.Single().NextObservation!.GameTimeSeconds,
+            "next observation must be part of the audited transition");
     }
 }
 
@@ -207,11 +400,21 @@ public static class Program
             (nameof(BrainIntelTests.OmniscientFactsAreRejectedBeforeStorage), BrainIntelTests.OmniscientFactsAreRejectedBeforeStorage),
             (nameof(BrainIntelTests.VesselTelegramProducesOnlyVisibleMotionFacts), BrainIntelTests.VesselTelegramProducesOnlyVisibleMotionFacts),
             (nameof(BrainIntelTests.RouteTelegramProducesWaypointSchedule), BrainIntelTests.RouteTelegramProducesWaypointSchedule),
+            (nameof(BrainIntelTests.RouteTelegramDoesNotInventTrainFromDestinationPoint), BrainIntelTests.RouteTelegramDoesNotInventTrainFromDestinationPoint),
             (nameof(BrainIntelTests.MissingMotionTextDoesNotCreateVelocity), BrainIntelTests.MissingMotionTextDoesNotCreateVelocity),
+            (nameof(BrainIntelTests.HighTideTelegramPreservesFutureInterceptTime), BrainIntelTests.HighTideTelegramPreservesFutureInterceptTime),
+            (nameof(BrainIntelTests.RouteTelegramCapturesRailBearingWithoutInventingSpeed), BrainIntelTests.RouteTelegramCapturesRailBearingWithoutInventingSpeed),
+            (nameof(BrainIntelTests.ChineseVesselTelegramParsesVisibleCourseAndSpeed), BrainIntelTests.ChineseVesselTelegramParsesVisibleCourseAndSpeed),
+            (nameof(BrainIntelTests.ChineseHighTideTelegramPreservesFutureTime), BrainIntelTests.ChineseHighTideTelegramPreservesFutureTime),
+            (nameof(BrainIntelTests.UnresolvedLocalizationTemplateIsNotTreatedAsIntel), BrainIntelTests.UnresolvedLocalizationTemplateIsNotTreatedAsIntel),
+            (nameof(BrainIntelTests.TelegramClockDoesNotFreezeEpisodeAge), BrainIntelTests.TelegramClockDoesNotFreezeEpisodeAge),
             (nameof(BrainIntelTests.MovingTrackExtrapolatesFromLastLegalReport), BrainIntelTests.MovingTrackExtrapolatesFromLastLegalReport),
+            (nameof(BrainIntelTests.MovingTrackCanPredictAtFutureImpactTime), BrainIntelTests.MovingTrackCanPredictAtFutureImpactTime),
             (nameof(BrainIntelTests.BrainActionsAreSemanticAndStrictlyMasked), BrainIntelTests.BrainActionsAreSemanticAndStrictlyMasked),
             (nameof(BrainIntelTests.ObservationContainsOnlyKnowledgeSnapshots), BrainIntelTests.ObservationContainsOnlyKnowledgeSnapshots),
             (nameof(BrainIntelTests.FacadeMasksBeforeCallingActuator), BrainIntelTests.FacadeMasksBeforeCallingActuator),
+            (nameof(BrainIntelTests.PlayerParitySessionIngestsTelegramAndResetsKnowledge), BrainIntelTests.PlayerParitySessionIngestsTelegramAndResetsKnowledge),
+            (nameof(BrainIntelTests.TransitionPublishesRewardAndTerminalState), BrainIntelTests.TransitionPublishesRewardAndTerminalState),
         };
 
         foreach (var test in tests)
