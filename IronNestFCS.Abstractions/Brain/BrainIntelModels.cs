@@ -20,6 +20,18 @@ public enum IntelTimeBasis
     Unknown,
 }
 
+/// <summary>生命周期由合法报告和报告年龄决定，不由隐藏实体的存在决定。</summary>
+public enum TrackLifecycleState
+{
+    Unknown,
+    Reported,
+    Located,
+    Tracked,
+    Stale,
+    Lost,
+    DestroyedConfirmed,
+}
+
 /// <summary>
 /// 情报来源审计信息。Evidence 只应描述玩家实际看到的证据，不能填充隐藏实体真值。
 /// </summary>
@@ -51,6 +63,14 @@ public sealed record RouteWaypointIntel(
     double? DistanceKm = null,
     double? PassageTimeSeconds = null);
 
+/// <summary>两个合法报告对同一公开 track 的事实不一致时保留的审计记录。</summary>
+public sealed record IntelConflict(
+    string Field,
+    string PreviousValue,
+    string NewValue,
+    IntelProvenance PreviousProvenance,
+    IntelProvenance NewProvenance);
+
 /// <summary>
 /// 单次合法情报更新。所有可选字段都代表“文本明确说了这个事实”；null 表示文本没有说。
 /// </summary>
@@ -76,6 +96,7 @@ public sealed record TrackIntel
     public MotionIntel? Motion { get; init; }
     public IReadOnlyList<RouteWaypointIntel> Route { get; init; } = Array.Empty<RouteWaypointIntel>();
     public double? EstimatedArrivalSeconds { get; init; }
+    public bool? ReportedDestroyed { get; init; }
 }
 
 /// <summary>电报适配器输出的语义事件；不携带 GameObject、MapEntity 或任何 IL2CPP 引用。</summary>
@@ -109,7 +130,10 @@ public sealed record TrackSnapshot
         MotionIntel? motion,
         IReadOnlyList<RouteWaypointIntel> route,
         double? estimatedArrivalSeconds,
-        double lastUpdatedAtSeconds)
+        double lastUpdatedAtSeconds,
+        IReadOnlyList<IntelConflict>? conflicts = null,
+        TrackLifecycleState lifecycleState = TrackLifecycleState.Unknown,
+        bool destroyedConfirmed = false)
     {
         TrackId = trackId;
         LatestProvenance = latestProvenance;
@@ -122,6 +146,9 @@ public sealed record TrackSnapshot
         Route = route;
         EstimatedArrivalSeconds = estimatedArrivalSeconds;
         LastUpdatedAtSeconds = lastUpdatedAtSeconds;
+        Conflicts = conflicts?.ToArray() ?? Array.Empty<IntelConflict>();
+        LifecycleState = lifecycleState;
+        DestroyedConfirmed = destroyedConfirmed;
     }
 
     public string TrackId { get; }
@@ -137,6 +164,9 @@ public sealed record TrackSnapshot
     public IReadOnlyList<RouteWaypointIntel> Route { get; }
     public double? EstimatedArrivalSeconds { get; }
     public double LastUpdatedAtSeconds { get; }
+    public IReadOnlyList<IntelConflict> Conflicts { get; }
+    public TrackLifecycleState LifecycleState { get; init; }
+    public bool DestroyedConfirmed { get; }
 }
 
 /// <summary>移动目标的合法情报外推结果。</summary>

@@ -8,6 +8,8 @@ public sealed class PlayerParityKnowledge
 {
     private const double DefaultBaseUncertaintyKm = 0.05;
     private const double DefaultUncertaintyGrowthKmPerSecond = 0.001;
+    public const double DefaultStaleAfterSeconds = 30.0;
+    public const double DefaultLostAfterSeconds = 120.0;
     private readonly Dictionary<string, TrackSnapshot> tracks = new(StringComparer.Ordinal);
 
     public int Count => tracks.Count;
@@ -56,11 +58,27 @@ public sealed class PlayerParityKnowledge
         return false;
     }
 
-    public IReadOnlyList<TrackSnapshot> Snapshot()
+    public IReadOnlyList<TrackSnapshot> Snapshot(double? nowSeconds = null)
     {
         return tracks.Values
+            .Select(track => nowSeconds.HasValue
+                ? track with { LifecycleState = LifecycleAt(track, nowSeconds.Value) }
+                : track)
             .OrderBy(x => x.TrackId, StringComparer.Ordinal)
             .ToArray();
+    }
+
+    public bool TryGetLifecycle(
+        string trackId,
+        double nowSeconds,
+        out TrackLifecycleState lifecycleState)
+    {
+        lifecycleState = TrackLifecycleState.Unknown;
+        if (!TryGet(trackId, out var snapshot) || snapshot == null)
+            return false;
+
+        lifecycleState = LifecycleAt(snapshot, nowSeconds);
+        return true;
     }
 
     /// <summary>
@@ -138,7 +156,9 @@ public sealed class PlayerParityKnowledge
             intel.Motion,
             intel.Route.ToArray(),
             intel.EstimatedArrivalSeconds,
-            intel.Provenance.ReceivedAtSeconds)
+            intel.Provenance.ReceivedAtSeconds,
+            lifecycleState: DetermineBaseLifecycle(intel),
+            destroyedConfirmed: intel.ReportedDestroyed == true)
         {
             ReportedBearingDegrees = intel.ReportedBearingDegrees,
             ReportedTimeBasis = intel.ReportedTimeBasis,
@@ -147,24 +167,110 @@ public sealed class PlayerParityKnowledge
 
     private static TrackSnapshot Merge(TrackSnapshot previous, TrackIntel intel)
     {
-        var snapshot = new TrackSnapshot(
-            previous.TrackId,
-            intel.Provenance,
-            intel.DisplayName ?? previous.DisplayName,
-            intel.ReportedGrid ?? previous.ReportedGrid,
-            intel.ReportedPosition ?? previous.ReportedPosition,
-            intel.ReportedDistanceKm ?? previous.ReportedDistanceKm,
-            intel.ReportedAtSeconds ?? previous.ReportedAtSeconds,
-            intel.Motion ?? previous.Motion,
-            intel.Route.Count == 0 ? previous.Route : intel.Route.ToArray(),
-            intel.EstimatedArrivalSeconds ?? previous.EstimatedArrivalSeconds,
-            intel.Provenance.ReceivedAtSeconds)
+        var conflicts = previous.Conflicts.ToList();
+        AddConflict(conflicts, nameof(TrackIntel.ReportedGrid), previous.ReportedGrid, intel.ReportedGrid,
+            previous.LatestProvenance, intel.Provenance);
+        AddConflict(conflicts, nameof(TrackIntel.ReportedPosition), previous.ReportedPosition, intel.ReportedPosition,
+            previous.LatestProvenance, intel.Provenance);
+        AddConflict(conflicts, nameof(TrackIntel.ReportedAtSeconds), previous.ReportedAtSeconds, intel.ReportedAtSeconds,
+            previous.LatestProvenance, intel.Provenance);
+        AddConflict(conflicts, nameof(TrackIntel.Motion), previous.Motion, intel.Motion,
+            previous.LatestProvenance, intel.Provenance);
+
+        var destroyedConfirmed = intel.ReportedDestroyed
+            ?? previous.DestroyedConfirmed;
+        var merged = new TrackIntel(previous.TrackId, intel.Provenance)
         {
+            DisplayName = intel.DisplayName ?? previous.DisplayName,
+            ReportedGrid = intel.ReportedGrid ?? previous.ReportedGrid,
+            ReportedPosition = intel.ReportedPosition ?? previous.ReportedPosition,
+            ReportedDistanceKm = intel.ReportedDistanceKm ?? previous.ReportedDistanceKm,
             ReportedBearingDegrees = intel.ReportedBearingDegrees ?? previous.ReportedBearingDegrees,
+            ReportedAtSeconds = intel.ReportedAtSeconds ?? previous.ReportedAtSeconds,
             ReportedTimeBasis = intel.ReportedAtSeconds.HasValue
                 ? intel.ReportedTimeBasis
                 : previous.ReportedTimeBasis,
+            Motion = intel.Motion ?? previous.Motion,
+            Route = intel.Route.Count == 0 ? previous.Route : intel.Route.ToArray(),
+            EstimatedArrivalSeconds = intel.EstimatedArrivalSeconds ?? previous.EstimatedArrivalSeconds,
+            ReportedDestroyed = destroyedConfirmed,
+        };
+        var snapshot = new TrackSnapshot(
+            previous.TrackId,
+            intel.Provenance,
+            merged.DisplayName,
+            merged.ReportedGrid,
+            merged.ReportedPosition,
+            merged.ReportedDistanceKm,
+            merged.ReportedAtSeconds,
+            merged.Motion,
+            merged.Route,
+            merged.EstimatedArrivalSeconds,
+            intel.Provenance.ReceivedAtSeconds,
+            conflicts,
+            DetermineBaseLifecycle(merged, destroyedConfirmed),
+            destroyedConfirmed)
+        {
+            ReportedBearingDegrees = merged.ReportedBearingDegrees,
+            ReportedTimeBasis = merged.ReportedTimeBasis,
         };
         return snapshot;
+    }
+
+    private static TrackLifecycleState DetermineBaseLifecycle(TrackIntel intel, bool? destroyedOverride = null)
+    {
+        if (destroyedOverride ?? intel.ReportedDestroyed == true)
+            return TrackLifecycleState.DestroyedConfirmed;
+        if (intel.ReportedPosition.HasValue && intel.Motion != null)
+            return TrackLifecycleState.Tracked;
+        if (intel.ReportedPosition.HasValue)
+            return TrackLifecycleState.Located;
+        if (intel.ReportedGrid != null
+            || intel.Motion != null
+            || intel.ReportedDistanceKm.HasValue
+            || intel.ReportedBearingDegrees.HasValue
+            || intel.ReportedAtSeconds.HasValue
+            || intel.Route.Count > 0
+            || intel.EstimatedArrivalSeconds.HasValue
+            || intel.DisplayName != null
+            || intel.ReportedDestroyed.HasValue)
+            return TrackLifecycleState.Reported;
+        return TrackLifecycleState.Unknown;
+    }
+
+    private static TrackLifecycleState LifecycleAt(TrackSnapshot snapshot, double nowSeconds)
+    {
+        if (snapshot.DestroyedConfirmed)
+            return TrackLifecycleState.DestroyedConfirmed;
+
+        var reportTime = snapshot.ReportedTimeBasis == IntelTimeBasis.SessionSeconds
+            && snapshot.ReportedAtSeconds.HasValue
+            ? snapshot.ReportedAtSeconds.Value
+            : snapshot.LastUpdatedAtSeconds;
+        var age = Math.Max(0.0, nowSeconds - reportTime);
+        if (age > DefaultLostAfterSeconds)
+            return TrackLifecycleState.Lost;
+        if (age > DefaultStaleAfterSeconds)
+            return TrackLifecycleState.Stale;
+        return snapshot.LifecycleState;
+    }
+
+    private static void AddConflict(
+        ICollection<IntelConflict> conflicts,
+        string field,
+        object? previous,
+        object? next,
+        IntelProvenance previousProvenance,
+        IntelProvenance nextProvenance)
+    {
+        if (next == null || previous == null || Equals(previous, next))
+            return;
+
+        conflicts.Add(new IntelConflict(
+            field,
+            Convert.ToString(previous, System.Globalization.CultureInfo.InvariantCulture) ?? "<null>",
+            Convert.ToString(next, System.Globalization.CultureInfo.InvariantCulture) ?? "<null>",
+            previousProvenance,
+            nextProvenance));
     }
 }

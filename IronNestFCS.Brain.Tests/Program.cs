@@ -507,6 +507,83 @@ static class BrainIntelTests
             "coverage buckets must partition the scanned corpus");
     }
 
+    public static void TrackLifecycleAgesFromReportedToTrackedStaleAndLost()
+    {
+        var knowledge = new PlayerParityKnowledge();
+        knowledge.Apply(new TrackIntel(
+            "Ship",
+            new IntelProvenance(IntelSourceKind.Telegram, "hq:report", 0.0, "course report"))
+        {
+            Motion = new MotionIntel(90.0, 0.01),
+        });
+        AssertEx.Equal(TrackLifecycleState.Reported, knowledge.Snapshot(0.0).Single().LifecycleState,
+            "a motion report without a position should remain Reported");
+
+        knowledge.Apply(new TrackIntel(
+            "Ship",
+            new IntelProvenance(IntelSourceKind.MapReveal, "map:ship", 10.0, "visible marker"))
+        {
+            ReportedPosition = new MapPoint(1.0, 2.0),
+            ReportedAtSeconds = 10.0,
+        });
+        AssertEx.Equal(TrackLifecycleState.Tracked, knowledge.Snapshot(10.0).Single().LifecycleState,
+            "position plus prior legal motion should become Tracked");
+        AssertEx.Equal(TrackLifecycleState.Stale, knowledge.Snapshot(41.0).Single().LifecycleState,
+            "an old legal report should become Stale without being deleted");
+        AssertEx.Equal(TrackLifecycleState.Lost, knowledge.Snapshot(131.0).Single().LifecycleState,
+            "a much older report should become Lost");
+        AssertEx.Equal(1, knowledge.Count, "stale/lost tracks remain available for audit");
+    }
+
+    public static void TrackLifecycleRetainsConflictsAndAllowsLegalReobservation()
+    {
+        var knowledge = new PlayerParityKnowledge();
+        knowledge.Apply(new TrackIntel(
+            "Pillbox",
+            new IntelProvenance(IntelSourceKind.MapReveal, "map:first", 1.0, "first visible marker"))
+        {
+            ReportedPosition = new MapPoint(1.0, 1.0),
+        });
+        knowledge.Apply(new TrackIntel(
+            "Pillbox",
+            new IntelProvenance(IntelSourceKind.Telegram, "hq:second", 2.0, "second visible report"))
+        {
+            ReportedPosition = new MapPoint(2.0, 2.0),
+        });
+
+        var conflicting = knowledge.Snapshot(2.0).Single();
+        AssertEx.Equal(new MapPoint(2.0, 2.0), conflicting.ReportedPosition,
+            "newer legal position should be the current estimate anchor");
+        AssertEx.Equal(1, conflicting.Conflicts.Count,
+            "replaced visible facts must remain auditable as conflicts");
+
+        knowledge.Apply(new TrackIntel(
+            "Pillbox",
+            new IntelProvenance(IntelSourceKind.ScoutRecon, "scout:again", 3.0, "re-observed target"))
+        {
+            ReportedPosition = new MapPoint(2.5, 2.0),
+            ReportedDestroyed = false,
+        });
+        AssertEx.True(knowledge.Snapshot(3.0).Single().LifecycleState != TrackLifecycleState.DestroyedConfirmed,
+            "a newer legal re-observation must not remain destroyed-confirmed");
+    }
+
+    public static void TrackLifecycleUsesExplicitDestructionConfirmationOnly()
+    {
+        var knowledge = new PlayerParityKnowledge();
+        knowledge.Apply(new TrackIntel(
+            "Target",
+            new IntelProvenance(IntelSourceKind.Telegram, "hq:destroyed", 5.0, "visible destruction report"))
+        {
+            ReportedDestroyed = true,
+        });
+
+        AssertEx.Equal(TrackLifecycleState.DestroyedConfirmed, knowledge.Snapshot(5.0).Single().LifecycleState,
+            "only explicit visible destruction evidence may confirm destruction");
+        AssertEx.True(!knowledge.TryGetLifecycle("missing", 5.0, out _),
+            "unknown track lifecycle must not be invented");
+    }
+
     private sealed record HiddenEntityFixture(double XKm, double YKm, double Health, string State);
 }
 
@@ -541,6 +618,9 @@ public static class Program
             (nameof(BrainIntelTests.HiddenEntityMutationCannotChangePlayerParityObservation), BrainIntelTests.HiddenEntityMutationCannotChangePlayerParityObservation),
             (nameof(BrainIntelTests.UnsupportedTelegramSemanticRetainsRawEvidence), BrainIntelTests.UnsupportedTelegramSemanticRetainsRawEvidence),
             (nameof(BrainIntelTests.TelegramCorpusReportsCoverageWithoutGuessing), BrainIntelTests.TelegramCorpusReportsCoverageWithoutGuessing),
+            (nameof(BrainIntelTests.TrackLifecycleAgesFromReportedToTrackedStaleAndLost), BrainIntelTests.TrackLifecycleAgesFromReportedToTrackedStaleAndLost),
+            (nameof(BrainIntelTests.TrackLifecycleRetainsConflictsAndAllowsLegalReobservation), BrainIntelTests.TrackLifecycleRetainsConflictsAndAllowsLegalReobservation),
+            (nameof(BrainIntelTests.TrackLifecycleUsesExplicitDestructionConfirmationOnly), BrainIntelTests.TrackLifecycleUsesExplicitDestructionConfirmationOnly),
         };
 
         foreach (var test in tests)

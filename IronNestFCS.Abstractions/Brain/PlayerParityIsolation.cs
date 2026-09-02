@@ -55,6 +55,14 @@ public static class PlayerParityObservationProjection
 
             Append(builder, track.EstimatedArrivalSeconds);
             Append(builder, track.LastUpdatedAtSeconds);
+            Append(builder, track.LifecycleState);
+            Append(builder, track.DestroyedConfirmed);
+            foreach (var conflict in track.Conflicts)
+            {
+                Append(builder, conflict.Field);
+                Append(builder, conflict.PreviousValue);
+                Append(builder, conflict.NewValue);
+            }
         }
 
         Append(builder, observation.ActionMask.HoldAllowed);
