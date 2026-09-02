@@ -80,16 +80,16 @@ public sealed class BrainRuntimeCoordinator : IDisposable
 
         try
         {
-        if (state == BrainRuntimeState.Resetting)
-        {
-            // Keep draining events while the old scene is still owned by the
-            // episode. A shell may impact after the mission terminal marker;
-            // generation/mission attribution still decides whether it is
-            // valid. Once reset succeeds, the next Tick uses the new id.
-            DrainGameEvents(gameTimeSeconds, wallTimeSeconds);
-            TickReset(gameTimeSeconds, wallTimeSeconds);
-            DrainPipeRequests(gameTimeSeconds, wallTimeSeconds);
-            return;
+            if (state == BrainRuntimeState.Resetting)
+            {
+                // Keep draining events while the old scene is still owned by
+                // the episode. A shell may impact after the mission terminal marker;
+                // generation/mission attribution still decides whether it is
+                // valid. Once reset succeeds, the next Tick uses the new id.
+                DrainGameEvents(gameTimeSeconds, wallTimeSeconds);
+                TickReset(gameTimeSeconds, wallTimeSeconds);
+                DrainPipeRequests(gameTimeSeconds, wallTimeSeconds);
+                return;
             }
 
             DrainGameEvents(gameTimeSeconds, wallTimeSeconds);
