@@ -29,11 +29,11 @@ Updated 2026-09-02. 本阶段继续遵守：Brain 默认关闭；PlayerParity �
 
 ## Tested
 
-- Unit tested：**50/50 Brain tests passed**，包括 coordinator 正常 episode/reset、policy timeout Hold、stale action/observation generation、旧 episode event 污染、延迟 impact、重复 terminal、reset timeout safe state、WaitingForMission、pipe 断线/重连和幂等 shutdown。
+- Unit tested：**51/51 Brain tests passed**，包括 coordinator 正常 episode/reset、policy timeout Hold、stale action/observation generation、pending decision supersede、旧 episode event 污染、延迟 impact、重复 terminal、reset timeout safe state、WaitingForMission、pipe 断线/重连和幂等 shutdown。
 - Corpus output：`scanned=14; tactical=14; fully-parsed=3; partial=4; unsupported=7`。
 - Build tested：`IronNestFCS.Logic` 构建成功，0 errors，21 个既有 warning；Brain test harness 构建成功，0 errors。
 - Game load tested：之前的 marker smoke run 成功加载最新 Logic/Abstractions，并记录 telegram/actuator/reward 三个 opt-in；无 Brain exception。
-- Code integration tested：`IronNestFCS.Logic` 构建成功，0 errors，21 个既有 warning；Brain test harness 构建成功，0 errors；**50/50 Brain tests passed**，新增 reset single-flight、延迟 impact、generation guard、in-process policy、dispose/transport shutdown 覆盖。当前机器没有 `python`/`py`，因此 Python client 未做本机语法执行（脚本仅使用 stdlib）。
+- Code integration tested：`IronNestFCS.Logic` 构建成功，0 errors，21 个既有 warning；Brain test harness 构建成功，0 errors；**51/51 Brain tests passed**，新增 reset single-flight、延迟 impact、generation guard、pending decision supersede、in-process policy、dispose/transport shutdown 覆盖。当前机器没有 `python`/`py`，因此 Python client 未做本机语法执行（脚本仅使用 stdlib）。
 - Real mission tested：**UNVERIFIED IN REAL MISSION**。尚未人工进入固定任务，因此没有声称真实 pipe、terminal 或 MissionManager reload 成功。
 
 ## Fairness invariants

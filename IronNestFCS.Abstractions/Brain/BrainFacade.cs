@@ -57,6 +57,19 @@ public sealed class BrainFacade : IBrainFacade
         return new BrainDecisionRequest(episodeId, pendingDecisionId, observation);
     }
 
+    /// <summary>
+    /// Invalidates an outstanding request when a newer event changes the
+    /// decision context. The next BeginDecisionRequest receives a new id, so
+    /// a delayed action from the superseded request cannot pass the facade.
+    /// </summary>
+    public bool SupersedePendingDecision()
+    {
+        if (pendingDecisionId == null || terminal)
+            return false;
+        pendingDecisionId = null;
+        return true;
+    }
+
     public BrainExecutionResult SubmitDecision(BrainAction action) => SubmitDecision(action, null);
 
     public BrainExecutionResult SubmitDecision(BrainAction action, string? requestedDecisionId)

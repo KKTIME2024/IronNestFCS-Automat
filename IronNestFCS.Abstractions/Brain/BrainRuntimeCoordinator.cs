@@ -126,10 +126,18 @@ public sealed class BrainRuntimeCoordinator : IDisposable
     /// </summary>
     public bool NotifyDecisionPoint(string reason, double gameTimeSeconds, double wallTimeSeconds)
     {
-        if (state != BrainRuntimeState.Running || pendingDecisionId != null)
+        if (state != BrainRuntimeState.Running)
             return false;
         try
         {
+            if (pendingDecisionId != null)
+            {
+                var superseded = pendingDecisionId;
+                if (!session.SupersedePendingDecision())
+                    return false;
+                Audit("DECISION_SUPERSEDED", gameTimeSeconds, superseded, reason);
+                pendingDecisionId = null;
+            }
             return RequestDecision(reason, gameTimeSeconds, wallTimeSeconds);
         }
         catch (Exception exception)

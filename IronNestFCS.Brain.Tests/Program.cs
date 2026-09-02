@@ -990,6 +990,35 @@ static class BrainIntelTests
         AssertEx.Equal(0, executed.Count, "stale runtime generation must not reach the actuator");
     }
 
+    public static void RuntimeSupersedesPendingDecisionOnNewEvent()
+    {
+        var session = NewRuntimeSession(out var executed);
+        var runtime = new BrainRuntimeCoordinator(
+            session,
+            new FakeRuntimeHost { MissionReady = true },
+            new BrainPipeRequestQueue(),
+            new FakeResetDriver());
+        runtime.Start();
+        runtime.Tick(0.0, 0.0);
+
+        var oldDecision = runtime.PendingDecisionId;
+        AssertEx.True(oldDecision != null, "initial decision must exist");
+        AssertEx.True(runtime.NotifyDecisionPoint("new-intel", 0.5, 0.5),
+            "new event must create a replacement decision");
+        AssertEx.True(runtime.PendingDecisionId != oldDecision,
+            "new event must rotate the decision id");
+
+        // The coordinator owns its original queue; submit through the facade
+        // boundary directly to model a delayed old action without touching the
+        // actuator. The requested id must be rejected and produce no execute.
+        var stale = session.SubmitDecision(
+            new BrainAction(BrainActionKind.Engage, "Target"), oldDecision!);
+        AssertEx.True(!stale.Accepted, "superseded decision action must be rejected");
+        AssertEx.Equal(0, executed.Count, "superseded action must not reach actuator");
+        AssertEx.True(runtime.DrainAudit().Any(x => x.Type == "DECISION_SUPERSEDED"),
+            "supersession must be auditable");
+    }
+
     public static void RuntimeDropsPreviousEpisodeEventAfterReset()
     {
         var session = NewRuntimeSession(out _);
@@ -1291,6 +1320,7 @@ public static class Program
             (nameof(BrainIntelTests.RuntimeCoordinatorRunsEpisodeAndResets), BrainIntelTests.RuntimeCoordinatorRunsEpisodeAndResets),
             (nameof(BrainIntelTests.RuntimePolicyTimeoutFallsBackToHold), BrainIntelTests.RuntimePolicyTimeoutFallsBackToHold),
             (nameof(BrainIntelTests.RuntimeRejectsStaleActionWithoutExecutingIt), BrainIntelTests.RuntimeRejectsStaleActionWithoutExecutingIt),
+            (nameof(BrainIntelTests.RuntimeSupersedesPendingDecisionOnNewEvent), BrainIntelTests.RuntimeSupersedesPendingDecisionOnNewEvent),
             (nameof(BrainIntelTests.RuntimeDropsPreviousEpisodeEventAfterReset), BrainIntelTests.RuntimeDropsPreviousEpisodeEventAfterReset),
             (nameof(BrainIntelTests.RuntimeResetTimeoutEntersSafeFailedState), BrainIntelTests.RuntimeResetTimeoutEntersSafeFailedState),
             (nameof(BrainIntelTests.RuntimeKeepsDelayedImpactBeforeResetBoundary), BrainIntelTests.RuntimeKeepsDelayedImpactBeforeResetBoundary),

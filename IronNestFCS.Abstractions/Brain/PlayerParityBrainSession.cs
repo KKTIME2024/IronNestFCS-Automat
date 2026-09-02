@@ -44,6 +44,8 @@ public sealed class PlayerParityBrainSession : IBrainFacade
 
     public BrainDecisionRequest? BeginDecisionRequest() => facade.BeginDecisionRequest();
 
+    public bool SupersedePendingDecision() => facade.SupersedePendingDecision();
+
     /// <summary>当前决策点的合法动作掩码。</summary>
     public ActionMask GetValidActions() => facade.GetObservation().ActionMask;
 
