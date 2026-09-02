@@ -454,6 +454,35 @@ static class BrainIntelTests
         AssertEx.Equal(1.0, facade.TransitionHistory.Single().NextObservation!.GameTimeSeconds,
             "next observation must be part of the audited transition");
     }
+
+    public static void HiddenEntityMutationCannotChangePlayerParityObservation()
+    {
+        var first = new PlayerParityKnowledge();
+        first.Apply(new TrackIntel(
+            "Visible-1",
+            new IntelProvenance(IntelSourceKind.Telegram, "hq:visible", 10.0, "[GRID B2]"))
+        {
+            ReportedGrid = "B2",
+            ReportedPosition = new MapPoint(2.0, 3.0),
+            Motion = new MotionIntel(90.0, 0.01),
+        });
+
+        var hiddenEnemy = new HiddenEntityFixture(40.0, 50.0, 100.0, "alive");
+        var before = new BrainObservation(10.0, first.Snapshot(),
+            new ActionMask(true, new[] { "Visible-1" }, false, false));
+        var beforeFingerprint = PlayerParityObservationProjection.Compute(before);
+
+        hiddenEnemy = hiddenEnemy with { XKm = -999.0, YKm = 777.0, Health = 0.0, State = "destroyed" };
+        var after = new BrainObservation(10.0, first.Snapshot(),
+            new ActionMask(true, new[] { "Visible-1" }, false, false));
+        var afterFingerprint = PlayerParityObservationProjection.Compute(after);
+
+        AssertEx.Equal(beforeFingerprint, afterFingerprint,
+            "hidden entity movement/damage/state must not affect the player-parity observation");
+        AssertEx.True(hiddenEnemy.Health == 0.0, "fixture mutation must actually occur");
+    }
+
+    private sealed record HiddenEntityFixture(double XKm, double YKm, double Health, string State);
 }
 
 public static class Program
@@ -484,6 +513,7 @@ public static class Program
             (nameof(BrainIntelTests.PlayerParitySessionAcceptsExplicitMapRevealPosition), BrainIntelTests.PlayerParitySessionAcceptsExplicitMapRevealPosition),
             (nameof(BrainIntelTests.PlayerParitySessionCanMaskReservedTracks), BrainIntelTests.PlayerParitySessionCanMaskReservedTracks),
             (nameof(BrainIntelTests.TransitionPublishesRewardAndTerminalState), BrainIntelTests.TransitionPublishesRewardAndTerminalState),
+            (nameof(BrainIntelTests.HiddenEntityMutationCannotChangePlayerParityObservation), BrainIntelTests.HiddenEntityMutationCannotChangePlayerParityObservation),
         };
 
         foreach (var test in tests)
