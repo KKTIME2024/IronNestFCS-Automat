@@ -164,55 +164,94 @@ on
 
 ## Smart 架构
 
-Smart 将持续存在的物理 Host 与可热重载的 TaskSystem / Logic 分开。规划阶段先建立无物理副作用的 Task × Gun 资格边，再在两门炮之间完成合法匹配，最后才让游戏弹道计算器处理被选中的分配。调度顺序属于计划；真实物理状态以及最终实际开火的是哪门炮，才是执行结果的权威来源。
+Smart 按**生命周期**划分状态，而不是按 UI 是否会动态变化来划分。
+
+- **Stable Host** 持有 world-space `FcsControlPanel`、玩家控制意图、`LogicReloader` 和 `PersistentLoadingSystem`。控制面板仍然是动态 UI：可用弹种按钮、语言文字和按钮瞬态状态都可以在运行时变化，但 F9 不会销毁面板对象，也不会重置当前弹种 / Auto Fire / Max Charge。
+- **IronNestFCS.Abstractions** 是唯一的跨 AssemblyLoadContext 契约。Host 提供 `IFcsHostServices`、`ILoadingSystem`、`IFcsControlUi`，可重载 Logic 实现 `IFcsModule`。
+- **Reloadable Logic** 持有目标 marker 采样、`ArtilleryTask`、Pending、规划、匹配、FirePlan 和执行状态；即时模式的 `FcsWindow` 状态 HUD 也属于这一层，因为它不保存玩家长期控制意图，可以随 Logic 重建。F9 会丢弃并重建这一层。
+
+关键所有权规则是：稳定 UI **不会保存具体 Logic 对象，也不会保存 target 位于可重载 Logic AssemblyLoadContext 的 delegate**。T1～T4 和 Auto Fire 回调都先进入 `FcsHostMod`；真正点击 / 通知发生时，Host 才解析 `LogicReloader.Current` 并调用当前 `IFcsModule`。Logic 反向读取稳定 UI 时只经过 `IFcsControlUi`，用于读取 Auto Fire / Max Charge，并发布可用弹种和语言更新。
+
+真实 Unity 场景切换与 F9 不同：场景切换会让场景所属的 UI 与物理句柄一起失效并重新绑定。
 
 ```mermaid
 flowchart TB
-    PLAYER["玩家 / Tactical Map<br/>目标 · 弹药 · T1-T4"]
+    PLAYER["玩家 / Tactical Map<br/>目标 · 控制"]
 
-    subgraph HOST["Stable Host · F9 后仍持续存在"]
-        CONTROLUI["FcsControlPanel<br/>弹种 · Auto Fire · Max Charge · T1-T4"]
+    subgraph HOST["Stable Host · F9 后继续存在"]
+        CONTROLUI["FcsControlPanel<br/>动态 world-space UI<br/>弹种 · Auto Fire · Max Charge · T1-T4"]
+        HOSTMOD["FcsHostMod<br/>稳定回调桥"]
+        RELOADER["LogicReloader<br/>Current IFcsModule"]
         LOADING["PersistentLoadingSystem<br/>已接受的物理装填"]
     end
 
-    subgraph LOGIC["可热重载 TaskSystem / Logic"]
-        INPUT["TargetSubmissionController<br/>标记采样 · 任务创建"]
+    subgraph ABI["IronNestFCS.Abstractions · 稳定契约"]
+        CONTRACT["IFcsModule · IFcsHostServices<br/>ILoadingSystem · IFcsControlUi<br/>ShellTypeCode · LoadingSnapshot · LoadRequest"]
+    end
+
+    subgraph LOGIC["Reloadable TaskSystem / Logic · F9 重建"]
+        MODULE["FcsModule<br/>IFcsModule 入口"]
+        FSC["FSC<br/>Composition Root"]
+        HUD["FcsWindow<br/>即时状态 HUD"]
+        INPUT["TargetSubmissionController + MapTable<br/>标记采样 · ArtilleryTask"]
         DISPATCH["TaskDispatcher<br/>Pending · 唤醒 · Admission"]
-        PLANNER["FirePlanner<br/>Snapshot · Eligibility"]
+        PLANNER["FirePlanner<br/>Snapshot · Eligibility · Materialization"]
         MATCHER["TaskGunMatcher<br/>无状态匹配"]
-        MATERIALIZE["Selected-only Materialization<br/>游戏 Ballistic Calculator"]
         PLAN["FirePlan"]
         PRIORITY["FirePriorityCoordinator<br/>一次性执行顺序"]
         EXECUTOR["FirePlanExecutor<br/>左右槽位 · current/next"]
-        CONTROLS["SharedConsoleCoordinator / TriggerConsole<br/>Review · Arm · Fire"]
+        SHARED["SharedConsoleCoordinator / TriggerConsole<br/>Review · Arm · Fire"]
+        GUNS["GunSystem Left / Right"]
+        TURRET["Turret"]
+        BALLISTIC["BallisticCalculator"]
     end
 
     subgraph REALITY["游戏物理现实 · 最终权威"]
-        GUNS["炮膛 / 装填机构 / 左右炮"]
-        TURRET["真实炮塔"]
-        CONSOLES["真实控制台"]
+        CHAMBER["炮膛 / 装填机构"]
+        PHYGUN["Left / Right Gun"]
+        PHYTURRET["真实炮塔"]
+        CONSOLES["Ballistic / Review / Trigger 控制台"]
     end
 
     PLAYER --> CONTROLUI
-    CONTROLUI -->|目标编号 + 弹种意图| INPUT
+    PLAYER -. F9 .-> HOSTMOD
+    CONTROLUI -->|Host 持有的 callback<br/>不保存 Logic 引用| HOSTMOD
+    HOSTMOD --> RELOADER
+    HOSTMOD --> LOADING
+    HOSTMOD -. 使用稳定 ABI .-> CONTRACT
+    RELOADER -->|调用时解析 Current| MODULE
+    RELOADER -. F9 卸载 / 重建 .-> MODULE
+    MODULE -. 实现 .-> CONTRACT
+    MODULE --> FSC
+    MODULE --> HUD
+    MODULE -->|TrySubmitTarget| INPUT
+    MODULE -->|OnAutoFireEnabled| EXECUTOR
+
+    FSC -. stable IFcsControlUi<br/>读取状态 / 发布 UI 数据 .-> CONTROLUI
     INPUT --> DISPATCH
     DISPATCH --> PLANNER
     PLANNER -->|无副作用资格边| MATCHER
-    MATCHER -->|选中的 Task×Gun| MATERIALIZE
-    MATERIALIZE --> PLAN
-    PLAN --> EXECUTOR
+    MATCHER -->|选中的 Task x Gun| PLANNER
+    PLANNER -->|只实体化选中项| BALLISTIC
+    BALLISTIC --> CONSOLES
+    PLANNER --> PLAN
+    PLAN --> DISPATCH
+    DISPATCH -->|AddPlan| EXECUTOR
     EXECUTOR <--> PRIORITY
-    EXECUTOR --> CONTROLS
-    CONTROLUI -. Auto Fire / Max Charge .-> EXECUTOR
-    CONTROLUI -. Max Charge .-> PLANNER
-
-    EXECUTOR -->|已接受的装填工作| LOADING
-    LOADING --> GUNS
-    GUNS -->|物理状态 / observed shot| EXECUTOR
+    EXECUTOR --> SHARED
+    EXECUTOR --> GUNS
     EXECUTOR --> TURRET
-    CONTROLS --> CONSOLES
+    EXECUTOR -->|已接受 LoadRequest| LOADING
+
+    LOADING --> CHAMBER
+    GUNS --> PHYGUN
+    TURRET --> PHYTURRET
+    SHARED --> CONSOLES
+    CHAMBER -->|真实物理状态| EXECUTOR
+    PHYGUN -->|observed shot| EXECUTOR
     EXECUTOR -. 槽位释放 / recovery retry .-> DISPATCH
-`$([Environment]::NewLine)
+```
+
 ### 任务生命周期
 
 Pending 中的 **Task 不绑定炮位**。只有经过 Planner / Matcher 选定分配并生成 **FirePlan** 后，任务才确定使用 Left 或 Right。左右炮可以并行完成本地准备；共享炮塔与击发流程由 `current / next` 控制，最终以真实物理击发结果决定消费哪个 FirePlan。

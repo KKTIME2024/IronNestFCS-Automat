@@ -1,9 +1,9 @@
 # IronNestFCS Smart — Planning Architecture
 
-> 状态快照：2026-08-13（UTC+8）  
-> 当前正式版本：**v1.2.0**  
-> 默认分支：`master`  
-> 发布基线：`8197223ced619525d78d4b7bc24f7a30aacc28e7`（`release: v1.2.0`）  
+> 状态快照：2026-09-05（UTC+8）
+> 当前正式版本：**v1.2.8**
+> 默认分支：`master`
+> 发布基线：`04a5e35`（`release: v1.2.8`）
 > 本组文档由原单文件 `IronNestFCS-Smart_项目背景与设计来源.md` 拆分而来。
 
 > 定位：Stable Host / Logic、PersistentLoading、Dispatcher、Planner、Matcher、Materialization、FirePlan 与 Priority。
@@ -23,72 +23,93 @@
 
 ## Stable Host / TaskSystem 的架构边界
 
-上游项目本来已经存在 Host / Logic 分离和 F9 Logic 热重载机制。
-
-**Smart 并不是发明了 Host / Logic 分层。**
-
-Smart 的真正改动是重新定义：
-
-> 哪些状态必须留在 Stable Host，哪些状态可以随 TaskSystem 被 F9 推翻。
+上游项目本来已经存在 Host / Logic 分离和 F9 Logic 热重载机制。**Smart 并不是发明了 Host / Logic 分层**；Smart 真正重新定义的是：哪些状态必须留在 Stable Host，哪些状态可以随 TaskSystem 被 F9 推翻。
 
 ### Stable Host
 
-Host 必须持有不应该因为 F9 消失的稳定运行时。
-
-当前包括：
+Host 持有不应该因为 F9 消失的运行时：
 
 ```text
+FcsHostMod
+LogicReloader
 PersistentLoadingSystem
 FcsControlPanel / player UI intent
 ```
 
-Host 的核心语义：
+其中 `FcsControlPanel` 虽然是**动态 UI**，生命周期仍然属于 Host。动态与持久并不矛盾：
+
+- PurchaseDeck 发布的可用弹种集合变化时，弹种按钮可以动态重建；
+- 游戏语言变化时，文字可以动态更新；
+- T1～T4 可以临时变成不可点击再恢复；
+- AutoFire / MaxCharge 的显示和值会随玩家操作变化；
+- 但 F9 不销毁面板对象，也不把 selected shell / AutoFire / MaxCharge 重置成默认值。
+
+真实场景切换才调用 `FcsControlPanel.OnSceneChanged()`，因为那时 world-space UI 和物理场景句柄本身都已失效。`FcsWindow` 是另一类 UI：它是 reloadable Logic 内的 immediate-mode 状态 HUD，不保存 selected shell / AutoFire / MaxCharge 等长期控制意图，因此允许随 F9 重建。
+
+### Host bridge / AssemblyLoadContext 不变量
+
+Stable UI 不能直接引用 reloadable Logic。
+
+正确调用链：
 
 ```text
-Stable Host
-F9 reloads TaskSystem only
-PersistentLoadingSystem stays alive
-FcsControlPanel stays alive
+FcsControlPanel
+→ callback target = FcsHostMod
+→ resolve _reloader.Current at call time
+→ IFcsModule.TrySubmitTarget / OnAutoFireEnabled
+→ current Logic
 ```
 
-也就是说：
+必须保持：
 
-- 已经被接受的物理装填事务属于 Host；
-- F9 不应该打断它；
-- 任务系统销毁，不意味着现实里的炮弹“没装过”；
-- LoadingSnapshot 是 Logic 重新接入现实的重要边界对象。
+- Host 不保存具体 `FcsModule` / `FSC` 引用；
+- Host 不保存 target 位于旧 Logic ALC 的 delegate；
+- UI 每次提交 T1～T4 时都解析当时的 `LogicReloader.Current`；
+- `ShellTypeCode` 等跨层数据只使用 `IronNestFCS.Abstractions` 类型；
+- Logic 可以引用稳定 Host 的 `IFcsControlUi` / `ILoadingSystem`，因为这个方向不会让 Host 反向持有旧 Logic。
 
 ### TaskSystem / Logic
 
-Logic 属于可重规划层。
+Logic 属于可重规划层，负责：
 
-它负责：
-
-- 接收任务意图；
-- Pending 队列；
-- 规划；
-- Task × Gun 匹配；
+- marker stabilization；
+- `ArtilleryTask` 创建；
+- Pending；
+- Task × Gun eligibility / matching；
+- selected-only ballistic materialization；
 - FirePlan；
-- 调度顺序；
-- Review / Arm / Fire 自动化；
-- 任务失败 / 完成；
-- current / next；
-- 接收稳定 UI 提交的目标 / 弹种意图。
+- current / next 与一次性执行顺序；
+- Review / Arm / Fire；
+- 任务失败 / 完成。
 
-所以：
+所以当前边界是：
 
 ```text
-Host = 现实持续存在 + 玩家控制面板 / UI 意图持续存在
-Logic = 计划可以推翻
+Host  = 真实装填持续存在 + 玩家控制 UI / 长期意图持续存在
+Logic = 任务计划可以整体推翻并重新读取现实
 ```
 
----
+### F9 对 UI 的精确语义
 
-## FCS 控制 UI 的稳定边界
+F9 不重建 world-space 控制面板，但会清除**任务相关的瞬态输入锁**。
 
-F9 只用于放弃并重建 TaskSystem 计划，不应该销毁玩家正在操作的 FCS 控制面板。
+例如：
 
-因此 world-space 控制 UI 由 Stable Host 持有：弹种选择、AutoFire、MaxCharge 与 T1～T4 按钮对象跨 F9 保持；真实场景切换时才随场景生命周期重建。按钮通过稳定 Host bridge 在点击时调用当前 `IFcsModule`，不能持有旧 Logic 对象或旧 ALC 中的 delegate。
+```text
+T1 click
+→ T1 暂时禁用
+→ Logic 正在 marker stabilization
+→ F9 销毁旧 Logic coroutine
+→ Host ResetTransientInputs()
+→ T1 恢复可点击
+```
+
+因此需要区分：
+
+```text
+跨 F9 保留：selected shell / AutoFire / MaxCharge / UI GameObjects
+跨 F9 清理：T1～T4 本次提交的临时 disabled/processing 状态
+```
 
 地图 marker 采样、`ArtilleryTask` 创建与 Pending admission 仍属于 reloadable Logic；UI 只提交 `targetId + shell intent`，不替代 Planning。
 

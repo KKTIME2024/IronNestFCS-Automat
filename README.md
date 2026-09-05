@@ -164,55 +164,94 @@ Temporary probes used to verify TTI timing, mechanical-dial behavior, and charge
 
 ## Smart architecture
 
-Smart separates the persistent physical Host from the hot-reloadable TaskSystem / Logic layer. Planning first builds side-effect-free Task × Gun eligibility, matches legal assignments across both guns, and only then drives the game's ballistic calculator for the selected assignment. Execution order is a plan; observed physical state and the gun that actually fires remain authoritative.
+Smart separates runtime state by lifecycle, not by whether a component is visually dynamic.
+
+- **Stable Host** owns the world-space `FcsControlPanel`, player control intent, `LogicReloader`, and `PersistentLoadingSystem`. The panel is still dynamic: available shell buttons, language text and transient button state can change at runtime, but F9 does not destroy the panel object or reset selected shell / Auto Fire / Max Charge.
+- **IronNestFCS.Abstractions** is the only cross-AssemblyLoadContext contract. Host exposes `IFcsHostServices`, `ILoadingSystem` and `IFcsControlUi`; reloadable Logic implements `IFcsModule`.
+- **Reloadable Logic** owns target-marker sampling, `ArtilleryTask`, Pending, planning, matching, FirePlans and execution state. It also owns the immediate-mode `FcsWindow` status HUD, which carries no persistent player control intent and may be recreated with Logic. F9 discards and recreates this layer.
+
+The important ownership rule is that the stable UI never stores a concrete Logic object or a delegate whose target lives in the reloadable Logic AssemblyLoadContext. T1-T4 and Auto Fire callbacks terminate in `FcsHostMod`; at the moment of the click/notification, Host resolves `LogicReloader.Current` and calls the current `IFcsModule`. Logic may reference the stable UI only through `IFcsControlUi` to read Auto Fire / Max Charge and publish shell/language updates.
+
+A real Unity scene transition is different from F9: scene-owned UI and physical handles are then invalidated and rebound together.
 
 ```mermaid
 flowchart TB
-    PLAYER["Player / Tactical Map<br/>targets / ammunition / T1-T4"]
+    PLAYER["Player / Tactical Map<br/>targets · controls"]
 
-    subgraph HOST["Stable Host / survives F9"]
-        CONTROLUI["FcsControlPanel<br/>shell / Auto Fire / Max Charge / T1-T4"]
+    subgraph HOST["Stable Host · survives F9"]
+        CONTROLUI["FcsControlPanel<br/>dynamic world-space UI<br/>shell · Auto Fire · Max Charge · T1-T4"]
+        HOSTMOD["FcsHostMod<br/>stable callback bridge"]
+        RELOADER["LogicReloader<br/>Current IFcsModule"]
         LOADING["PersistentLoadingSystem<br/>accepted physical loading"]
     end
 
-    subgraph LOGIC["Reloadable TaskSystem / Logic"]
-        INPUT["TargetSubmissionController<br/>marker sampling / task creation"]
-        DISPATCH["TaskDispatcher<br/>Pending / wakeups / admission"]
-        PLANNER["FirePlanner<br/>snapshot / eligibility"]
-        MATCHER["TaskGunMatcher<br/>stateless matching"]
-        MATERIALIZE["Selected-only materialization<br/>game ballistic calculator"]
-        PLAN["FirePlan"]
-        PRIORITY["FirePriorityCoordinator<br/>one-shot order"]
-        EXECUTOR["FirePlanExecutor<br/>left/right slots / current/next"]
-        CONTROLS["SharedConsoleCoordinator / TriggerConsole<br/>Review / Arm / Fire"]
+    subgraph ABI["IronNestFCS.Abstractions · stable contract"]
+        CONTRACT["IFcsModule · IFcsHostServices<br/>ILoadingSystem · IFcsControlUi<br/>ShellTypeCode · LoadingSnapshot · LoadRequest"]
     end
 
-    subgraph REALITY["Game physical reality / authoritative"]
-        GUNS["Chamber / reload mechanism / guns"]
-        TURRET["Physical turret"]
-        CONSOLES["Physical consoles"]
+    subgraph LOGIC["Reloadable TaskSystem / Logic · replaced by F9"]
+        MODULE["FcsModule<br/>IFcsModule entrypoint"]
+        FSC["FSC<br/>composition root"]
+        HUD["FcsWindow<br/>immediate-mode status HUD"]
+        INPUT["TargetSubmissionController + MapTable<br/>marker sampling · ArtilleryTask"]
+        DISPATCH["TaskDispatcher<br/>Pending · wakeups · admission"]
+        PLANNER["FirePlanner<br/>snapshot · eligibility · materialization"]
+        MATCHER["TaskGunMatcher<br/>stateless matching"]
+        PLAN["FirePlan"]
+        PRIORITY["FirePriorityCoordinator<br/>one-shot order"]
+        EXECUTOR["FirePlanExecutor<br/>left/right slots · current/next"]
+        SHARED["SharedConsoleCoordinator / TriggerConsole<br/>Review · Arm · Fire"]
+        GUNS["GunSystem Left / Right"]
+        TURRET["Turret"]
+        BALLISTIC["BallisticCalculator"]
+    end
+
+    subgraph REALITY["Game physical reality · authoritative"]
+        CHAMBER["Chamber / reload mechanism"]
+        PHYGUN["Left / Right gun"]
+        PHYTURRET["Physical turret"]
+        CONSOLES["Ballistic / Review / Trigger consoles"]
     end
 
     PLAYER --> CONTROLUI
-    CONTROLUI -->|target id + shell intent| INPUT
+    PLAYER -. F9 .-> HOSTMOD
+    CONTROLUI -->|Host-owned callback<br/>no Logic reference| HOSTMOD
+    HOSTMOD --> RELOADER
+    HOSTMOD --> LOADING
+    HOSTMOD -. uses stable ABI .-> CONTRACT
+    RELOADER -->|resolve Current at call time| MODULE
+    RELOADER -. F9 unload / recreate .-> MODULE
+    MODULE -. implements .-> CONTRACT
+    MODULE --> FSC
+    MODULE --> HUD
+    MODULE -->|TrySubmitTarget| INPUT
+    MODULE -->|OnAutoFireEnabled| EXECUTOR
+
+    FSC -. stable IFcsControlUi<br/>read state / publish UI data .-> CONTROLUI
     INPUT --> DISPATCH
     DISPATCH --> PLANNER
     PLANNER -->|side-effect-free edges| MATCHER
-    MATCHER -->|selected Task x Gun| MATERIALIZE
-    MATERIALIZE --> PLAN
-    PLAN --> EXECUTOR
+    MATCHER -->|selected Task x Gun| PLANNER
+    PLANNER -->|selected-only| BALLISTIC
+    BALLISTIC --> CONSOLES
+    PLANNER --> PLAN
+    PLAN --> DISPATCH
+    DISPATCH -->|AddPlan| EXECUTOR
     EXECUTOR <--> PRIORITY
-    EXECUTOR --> CONTROLS
-    CONTROLUI -. Auto Fire / Max Charge .-> EXECUTOR
-    CONTROLUI -. Max Charge .-> PLANNER
-
-    EXECUTOR -->|accepted load work| LOADING
-    LOADING --> GUNS
-    GUNS -->|physical state / observed shot| EXECUTOR
+    EXECUTOR --> SHARED
+    EXECUTOR --> GUNS
     EXECUTOR --> TURRET
-    CONTROLS --> CONSOLES
-    EXECUTOR -. freed slot / recovery retry .-> DISPATCH
+    EXECUTOR -->|accepted LoadRequest| LOADING
+
+    LOADING --> CHAMBER
+    GUNS --> PHYGUN
+    TURRET --> PHYTURRET
+    SHARED --> CONSOLES
+    CHAMBER -->|physical state| EXECUTOR
+    PHYGUN -->|observed shot| EXECUTOR
+    EXECUTOR -. slot release / recovery retry .-> DISPATCH
 ```
+
 ### Mission lifecycle
 
 A Pending **Task is not bound to a gun**. The Left or Right side becomes fixed only after Planner / Matcher selects an assignment and creates a **FirePlan**. Both guns may perform local preparation in parallel; shared turret and firing work follows `current / next`, while observed physical gunfire determines which FirePlan is actually consumed.

@@ -1,9 +1,9 @@
 # IronNestFCS Smart — Project Context
 
-> 状态快照：2026-08-13（UTC+8）  
-> 当前正式版本：**v1.2.0**  
-> 默认分支：`master`  
-> 发布基线：`8197223ced619525d78d4b7bc24f7a30aacc28e7`（`release: v1.2.0`）  
+> 状态快照：2026-09-05（UTC+8）
+> 当前正式版本：**v1.2.8**
+> 默认分支：`master`
+> 发布基线：`04a5e35`（`release: v1.2.8`）
 > 本组文档由原单文件 `IronNestFCS-Smart_项目背景与设计来源.md` 拆分而来。
 
 > 定位：长期稳定原则、项目身份、F9 语义、总体架构图、关键不变量与资料权威规则。
@@ -157,8 +157,8 @@ F9 重载任务逻辑
 ### Host 与 Logic
 
 ```text
-Host  = 持续存在的物理现实
-Logic = 可以被 F9 推翻的任务计划
+Host  = 跨 F9 持续存在的物理事务 + 玩家控制 UI / 长期意图
+Logic = 可以被 F9 推翻的任务计划 / 执行状态
 ```
 
 ### Eligibility 与 Ranking
@@ -251,47 +251,105 @@ TaskSystem Logic 被销毁并重建
 
 ## 当前总体架构
 
-当前 `FSC` 是 reloadable TaskSystem 的 **composition root**。
+当前架构按生命周期分成三层：Stable Host、稳定 ABI 契约、Reloadable Logic。`FSC` 仍然是 reloadable TaskSystem 的 **composition root**，负责组装 Logic 模块，不应该重新演变成巨型业务类。
 
-它主要负责组装模块，不应该重新演变成巨型业务类。
-
-当前主结构：
+### Stable Host
 
 ```text
-Stable Host
-├─ FcsHostMod
+FcsHostMod
+├─ FcsControlPanel
+│  ├─ 动态 world-space 控件
+│  ├─ selected shell
+│  ├─ AutoFire
+│  ├─ MaxCharge
+│  └─ T1～T4 的瞬态输入状态
 ├─ LogicReloader
-├─ PersistentLoadingSystem
-└─ FcsControlPanel — world-space controls + player UI intent
-        │
-        │ IFcsHostServices / ILoadingSystem / IFcsControlUi
-        ▼
-Reloadable Logic
-├─ FSC — Composition Root
-├─ Planning / Admission
-│  ├─ TaskDispatcher
-│  ├─ FirePlanner
-│  └─ TaskGunMatcher — stateless pure matcher
-├─ FirePriorityCoordinator
-├─ FirePlanExecutor
-├─ SharedConsoleCoordinator
-├─ TargetSubmissionController
-├─ PhysicalClickHelper
-├─ MapTable
-├─ BallisticCalculator
-├─ PurchaseDeck
-├─ GunSystem Left
-├─ GunSystem Right
-├─ Turret
-└─ TriggerConsole
+│  └─ Current IFcsModule
+└─ PersistentLoadingSystem
+   └─ 已接受的真实物理装填事务
 ```
 
-这里表示的是**模块关系**，不是对象所有权树。`TaskGunMatcher` 是无状态纯匹配模块，并不是 `FSC` 持有的长期实例。
+`FcsControlPanel` 是**动态 UI**，但它的生命周期属于 Stable Host：弹种列表、语言和按钮显示可以动态刷新；F9 不销毁面板，也不重置玩家长期控制意图。`FcsWindow` 则只是即时状态 HUD，不保存弹种 / AutoFire / MaxCharge 等玩家控制意图，因此仍属于 reloadable Logic，可以随 F9 重建。真实场景切换才销毁 / 重建场景所属 world-space UI 与物理绑定。
 
-核心执行链：
+Host UI 的 callback target 必须留在 Host。T1～T4 或 AutoFire 触发时：
 
 ```text
-玩家任务意图
+FcsControlPanel
+→ FcsHostMod stable callback
+→ resolve LogicReloader.Current
+→ current IFcsModule
+→ reloadable Logic
+```
+
+因此 Stable Host **不持有具体 `FcsModule` / `FSC` / `ArtilleryTask` / Logic delegate**，不会因为 UI 长寿而把旧 AssemblyLoadContext 钉住。
+
+### 稳定 ABI 契约
+
+```text
+IronNestFCS.Abstractions
+├─ IFcsModule
+├─ IFcsHostServices
+├─ ILoadingSystem
+├─ IFcsControlUi
+├─ ShellTypeCode
+├─ LoadingSnapshot
+└─ LoadRequest
+```
+
+跨边界只传共享契约和稳定 DTO / enum。Logic 可以持有稳定 Host 的 `IFcsControlUi` / `ILoadingSystem` 接口引用；旧 Logic 卸载时这些单向引用随旧 Logic 一起消失。
+
+### Reloadable Logic
+
+```text
+FcsModule — IFcsModule entrypoint
+└─ FSC — Composition Root
+   ├─ FcsWindow — immediate-mode status HUD
+   ├─ TargetSubmissionController / MapTable
+   ├─ TaskDispatcher
+   ├─ FirePlanner
+   ├─ TaskGunMatcher — stateless pure matcher
+   ├─ FirePlanExecutor
+   ├─ FirePriorityCoordinator
+   ├─ SharedConsoleCoordinator
+   ├─ PhysicalClickHelper
+   ├─ BallisticCalculator
+   ├─ PurchaseDeck
+   ├─ GunSystem Left / Right
+   ├─ Turret
+   └─ TriggerConsole
+```
+
+这里表示的是**职责 / 模块关系**，不是严格对象所有权树。`TaskGunMatcher` 是无状态纯匹配模块，并不是 `FSC` 持有的长期实例。
+
+### F9 生命周期边界
+
+```text
+F9 保留
+├─ FcsControlPanel 对象
+├─ selected shell
+├─ AutoFire / MaxCharge
+├─ PersistentLoadingSystem
+└─ 已经存在的真实炮膛 / 装填现实
+
+F9 清除 / 重建
+├─ 当前 Task / Pending
+├─ marker stabilization coroutine
+├─ FirePlan / current / next
+├─ Dispatcher / Planner / Executor 计划状态
+└─ 整个 reloadable Logic AssemblyLoadContext
+
+F9 额外清理
+└─ T1～T4 的瞬态输入锁，避免旧 Logic 被中断后按钮卡死
+```
+
+核心任务链现在从玩家意图开始就是：
+
+```text
+Player
+→ FcsControlPanel
+→ FcsHostMod stable bridge
+→ resolve current IFcsModule
+→ TargetSubmissionController
 → TaskDispatcher
 → FirePlanner Eligibility
 → TaskGunMatcher
@@ -299,7 +357,6 @@ Reloadable Logic
 → FirePlan
 → FirePlanExecutor
 → FirePriorityCoordinator
-→ current / next
 → Local + Shared execution
 → physical fire settlement
 → consume actual fired plan(s)
@@ -313,22 +370,24 @@ Reloadable Logic
 
 ```mermaid
 flowchart TB
-    PLAYER["玩家 / Tactical Map<br/>目标 · 弹种 · T1~T4 · AutoFire · MaxCharge"]
+    PLAYER["玩家 / Tactical Map<br/>目标 · 控制"]
 
     subgraph HOST["Stable Host｜F9 持久层"]
-        HOSTMOD["FcsHostMod"]
-        RELOADER["LogicReloader"]
-        LOADING["PersistentLoadingSystem"]
-        CONTROLUI["FcsControlPanel<br/>Shell · AutoFire · MaxCharge · T1~T4"]
+        CONTROLUI["FcsControlPanel<br/>动态 UI · Shell · AutoFire · MaxCharge · T1~T4"]
+        HOSTMOD["FcsHostMod<br/>Stable Callback Bridge"]
+        RELOADER["LogicReloader<br/>Current IFcsModule"]
+        LOADING["PersistentLoadingSystem<br/>Accepted Physical Loading"]
     end
 
-    subgraph CONTRACT["IronNestFCS.Abstractions"]
-        API["IFcsModule / IFcsHostServices / ILoadingSystem / IFcsControlUi<br/>LoadingSnapshot / LoadRequest"]
+    subgraph CONTRACT["IronNestFCS.Abstractions｜稳定 ABI"]
+        API["IFcsModule / IFcsHostServices<br/>ILoadingSystem / IFcsControlUi<br/>ShellTypeCode / LoadingSnapshot / LoadRequest"]
     end
 
-    subgraph LOGIC["Reloadable TaskSystem｜IronNestFCS.Logic"]
+    subgraph LOGIC["Reloadable TaskSystem｜F9 重建"]
+        MODULE["FcsModule<br/>IFcsModule Entrypoint"]
         FSC["FSC<br/>Composition Root"]
-        INPUT["TargetSubmissionController / MapTable"]
+        HUD["FcsWindow<br/>Immediate-mode Status HUD"]
+        INPUT["TargetSubmissionController + MapTable<br/>marker sampling / ArtilleryTask"]
 
         subgraph PLANNING["Planning / Admission"]
             DISPATCH["TaskDispatcher<br/>Pending / Trigger / Retry"]
@@ -337,10 +396,9 @@ flowchart TB
             PLAN["FirePlan"]
         end
 
-        PRIORITY["FirePriorityCoordinator<br/>One-shot order"]
-        EXECUTOR["FirePlanExecutor<br/>Left/Right Slots<br/>current / next"]
-        SHARED["SharedConsoleCoordinator<br/>Ballistic / Requisition / Trigger"]
-        TRIGGER["TriggerConsole<br/>Review Controller / Arm / Fire"]
+        PRIORITY["FirePriorityCoordinator<br/>One-shot Order"]
+        EXECUTOR["FirePlanExecutor<br/>Left/Right Slots · current/next"]
+        SHARED["SharedConsoleCoordinator / TriggerConsole<br/>Review · Arm · Fire"]
         GUNS["GunSystem Left / Right"]
         TURRET["Turret"]
         BALLISTIC["BallisticCalculator"]
@@ -355,21 +413,19 @@ flowchart TB
 
     PLAYER --> CONTROLUI
     PLAYER -. F9 .-> HOSTMOD
+    CONTROLUI -->|Host callback<br/>不保存 Logic 引用| HOSTMOD
     HOSTMOD --> RELOADER
     HOSTMOD --> LOADING
-    HOSTMOD --> CONTROLUI
-    CONTROLUI -->|Host callback| HOSTMOD
-    LOADING --> API
-    HOSTMOD -->|current IFcsModule| API
-    API --> FSC
-    API -->|TrySubmitTarget| INPUT
-    RELOADER -. recreate .-> FSC
+    HOSTMOD -. stable ABI .-> API
+    RELOADER -->|调用时解析 Current| MODULE
+    RELOADER -. F9 unload / recreate .-> MODULE
+    MODULE -. implements IFcsModule .-> API
+    MODULE --> FSC
+    MODULE --> HUD
+    MODULE -->|TrySubmitTarget| INPUT
+    MODULE -->|OnAutoFireEnabled| EXECUTOR
 
-    FSC --> INPUT
-    FSC --> DISPATCH
-    FSC --> EXECUTOR
-    FSC --> SHARED
-
+    FSC -. IFcsControlUi<br/>read state / publish data .-> CONTROLUI
     INPUT -->|ArtilleryTask| DISPATCH
     DISPATCH --> PLANNER
     PLANNER -->|side-effect-free edges| MATCHER
@@ -379,20 +435,16 @@ flowchart TB
     PLANNER --> PLAN
     PLAN --> DISPATCH
     DISPATCH -->|AddPlan| EXECUTOR
-
-    EXECUTOR --> PRIORITY
-    PRIORITY -->|committed order| EXECUTOR
-
+    EXECUTOR <--> PRIORITY
     EXECUTOR --> SHARED
-    EXECUTOR --> TRIGGER
     EXECUTOR --> GUNS
     EXECUTOR --> TURRET
+    EXECUTOR -->|LoadRequest| LOADING
 
     LOADING --> CHAMBER
     GUNS --> PHYGUN
     TURRET --> PHYTURRET
-    TRIGGER --> CONSOLE
-
+    SHARED --> CONSOLE
     CHAMBER -->|physical state| EXECUTOR
     PHYGUN -->|observed fire| EXECUTOR
     EXECUTOR -. slot released / retry .-> DISPATCH
