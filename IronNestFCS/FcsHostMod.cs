@@ -10,8 +10,8 @@ using UnityEngine.InputSystem;
 namespace IronNestFCS;
 
 /// <summary>
-/// Stable Host. F9 reloads TaskSystem only; PersistentLoadingSystem remains alive and continues any
-/// already-accepted physical loading transaction.
+/// Stable Host. F9 reloads TaskSystem only; PersistentLoadingSystem and the FCS control panel remain alive.
+/// Already-accepted physical loading and player UI intent therefore survive TaskSystem replanning.
 /// </summary>
 public class FcsHostMod : MelonMod
 {
@@ -24,6 +24,7 @@ public class FcsHostMod : MelonMod
 
     private readonly FcsHostServices _hostServices = new();
     private LogicReloader? _reloader;
+    private FcsControlPanel? _controlPanel;
     private bool _sceneBindPending;
     private float _nextBindAttemptAt;
     private bool _shutdownStarted;
@@ -39,6 +40,9 @@ public class FcsHostMod : MelonMod
 
         MelonLogger.Msg($"IronNestFCS Smart Host Started. Logic path: {logicDll}");
         MelonLogger.Msg($"Press {ReloadKeyName} to hot reload TaskSystem.");
+
+        _controlPanel = new FcsControlPanel(TrySubmitTargetFromUi, OnAutoFireEnabledFromUi);
+        _hostServices.ControlUiRuntime = _controlPanel;
 
         _reloader = new LogicReloader(
             logicDll,
@@ -63,11 +67,28 @@ public class FcsHostMod : MelonMod
         return kb != null && kb.f8Key.wasPressedThisFrame;
     }
 
+    private bool TrySubmitTargetFromUi(int targetId, ShellTypeCode shell)
+    {
+        try { return _reloader?.Current?.TrySubmitTarget(targetId, shell) ?? false; }
+        catch (Exception ex)
+        {
+            MelonLogger.Error($"FCS UI target submission failed: {ex}");
+            return false;
+        }
+    }
+
+    private void OnAutoFireEnabledFromUi()
+    {
+        try { _reloader?.Current?.OnAutoFireEnabled(); }
+        catch (Exception ex) { MelonLogger.Error($"FCS UI AutoFire notification failed: {ex}"); }
+    }
+
     public override void OnSceneWasLoaded(int buildIndex, string sceneName)
     {
         // A real scene transition invalidates both TaskSystem handles and persistent physical handles.
         // Stop TaskSystem immediately and perform one serialized delayed rebind instead of stacking coroutines.
         _reloader?.Unload();
+        _controlPanel?.OnSceneChanged();
         _hostServices.LoadingRuntime.OnSceneChanged();
         ScheduleSceneBind(SceneBindDelaySeconds);
     }
@@ -91,6 +112,7 @@ public class FcsHostMod : MelonMod
 
         if (_reloader.Reload())
         {
+            _controlPanel?.Activate();
             _sceneBindPending = false;
             return;
         }
@@ -119,13 +141,18 @@ public class FcsHostMod : MelonMod
 
         if (ReloadKeyPressed() || _reloader.CheckDllUpdated())
         {
-            MelonLogger.Msg($"[{ReloadKeyName}] Hot reloading TaskSystem; loading transactions stay alive.");
-            _reloader.Reload();
+            MelonLogger.Msg($"[{ReloadKeyName}] Hot reloading TaskSystem; loading transactions and FCS controls stay alive.");
+            var reloaded = _reloader.Reload();
+            _controlPanel?.ResetTransientInputs();
+            if (reloaded)
+                _controlPanel?.Activate();
             return;
         }
 
         try { _reloader.Current?.Update(); }
         catch (Exception ex) { MelonLogger.Error($"Logic.Update() exception: {ex}"); }
+
+        _controlPanel?.Update();
     }
 
     public override void OnGUI()
@@ -150,6 +177,9 @@ public class FcsHostMod : MelonMod
         // remains a fallback for non-application unload paths and is guarded against double disposal.
         _reloader?.Unload();
         _reloader = null;
+        _controlPanel?.Dispose();
+        _controlPanel = null;
+        _hostServices.ControlUiRuntime = null;
         _hostServices.LoadingRuntime.Dispose();
     }
 
@@ -166,6 +196,10 @@ public class FcsHostMod : MelonMod
     private sealed class FcsHostServices : IFcsHostServices
     {
         internal PersistentLoadingSystem LoadingRuntime { get; } = new();
+        internal IFcsControlUi? ControlUiRuntime { get; set; }
+
         public ILoadingSystem Loading => LoadingRuntime;
+        public IFcsControlUi ControlUi => ControlUiRuntime
+            ?? throw new InvalidOperationException("FCS control UI is not initialized.");
     }
 }

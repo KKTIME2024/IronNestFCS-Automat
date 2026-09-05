@@ -409,14 +409,14 @@ internal sealed class FirePlanner
                 }
 
                 shell = (BulletType)(int)loading.ActualShell.Value;
-                charge = _fcs.SceneInteractor.maxCharge ? 6 : BallisticCalculator.MinimumCharge(task.distance);
+                charge = _fcs.ControlUi.MaxCharge ? 6 : BallisticCalculator.MinimumCharge(task.distance);
                 loadKnown = false;
                 loadLabel = "shell-loaded remaining ETA not measured";
                 return true;
 
             case LoadingPhysicalState.EmptyReady:
                 shell = task.bulletType;
-                charge = _fcs.SceneInteractor.maxCharge ? 6 : BallisticCalculator.MinimumCharge(task.distance);
+                charge = _fcs.ControlUi.MaxCharge ? 6 : BallisticCalculator.MinimumCharge(task.distance);
                 loadKnown = true;
                 loadSeconds = FireReadyEstimator.FreshLoadReadySeconds;
                 loadLabel = "fresh load baseline";

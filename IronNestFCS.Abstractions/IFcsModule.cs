@@ -8,6 +8,10 @@ public interface IFcsModule
     /// <summary>重载后调用一次。Host services 位于稳定上下文，F9 不会销毁。</summary>
     bool Initialize(IFcsHostServices hostServices);
 
+    bool TrySubmitTarget(int targetId, ShellTypeCode shell);
+
+    void OnAutoFireEnabled();
+
     void Update();
 
     void OnGui();

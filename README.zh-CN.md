@@ -14,13 +14,13 @@
 
 你决定目标、弹药和任务顺序，Smart 负责执行计划。
 
-需要放弃当前计划时按 **F9**。F9 重置的是 TaskSystem 的任务计划和执行状态，不会假装已经被实际装填系统接受的动作从未发生。重新提交任务后，Smart 会从两门炮此刻真实存在的物理状态继续规划。
+需要放弃当前计划时按 **F9**。F9 只重载 TaskSystem 的任务计划 / 执行层；FCS 控制面板、当前弹种、Auto Fire、Max Charge，以及已经被实际装填系统接受的动作都会继续存在。重新提交任务后，Smart 会从两门炮此刻真实存在的物理状态继续规划。
 
 ## 主要功能
 
 - T1～T4 可以形成任务队列，并让左右两门炮持续处理任务。
 - 当前实装弹种 / 装药无法匹配的任务会继续保留在 Pending，不再直接消失；后面能够匹配的任务仍然可以继续规划。
-- 按 **F9** 可以重新规划，不会抹掉已经开始的实际装填。
+- 按 **F9** 可以重新规划，不会抹掉已经开始的实际装填，也不会重置 FCS 控制面板。
 - 尽量读取真实炮膛、装填机构、炮塔和控制器状态后再决定下一步。
 - 通过游戏自己的弹道计算器取得射击解算结果。
 - 在进入较慢的游戏弹道计算器 UI 之前，会先快速排除明显的弹种不匹配或固定装药射程不足。
@@ -132,7 +132,7 @@ Smart 可自动识别中文，并支持**简体中文 / English** 双语 UI。
 
 当前目标、队列或射击顺序不满意时，直接按 **F9**，重新放置标记并提交新的 T1～T4。
 
-需要注意：**F9 重置的是计划，不是物理现实。** 已经被装填系统接受的炮弹 / 药包装填会继续；新计划会读取最后真实存在的炮膛、仰角和炮塔状态。
+需要注意：**F9 重置的是计划，不是物理现实，也不会重置玩家的 UI 意图。** FCS 控制面板会继续存在，包括当前弹种、Auto Fire 和 Max Charge 状态。已经被装填系统接受的炮弹 / 药包装填会继续；新的 Logic 会读取最后真实存在的炮膛、仰角和炮塔状态。
 
 如果某个任务因为当前实装弹种 / 装药无法执行，它可能会有意一直留在 Pending，直到炮的实际状态发生变化。如果这个任务已经不需要，直接按 F9 清掉当前 TaskSystem 计划 / 队列，再重新提交即可。
 
@@ -171,10 +171,12 @@ flowchart TB
     PLAYER["玩家 / Tactical Map<br/>目标 · 弹药 · T1-T4"]
 
     subgraph HOST["Stable Host · F9 后仍持续存在"]
+        CONTROLUI["FcsControlPanel<br/>弹种 · Auto Fire · Max Charge · T1-T4"]
         LOADING["PersistentLoadingSystem<br/>已接受的物理装填"]
     end
 
     subgraph LOGIC["可热重载 TaskSystem / Logic"]
+        INPUT["TargetSubmissionController<br/>标记采样 · 任务创建"]
         DISPATCH["TaskDispatcher<br/>Pending · 唤醒 · Admission"]
         PLANNER["FirePlanner<br/>Snapshot · Eligibility"]
         MATCHER["TaskGunMatcher<br/>无状态匹配"]
@@ -191,7 +193,9 @@ flowchart TB
         CONSOLES["真实控制台"]
     end
 
-    PLAYER --> DISPATCH
+    PLAYER --> CONTROLUI
+    CONTROLUI -->|目标编号 + 弹种意图| INPUT
+    INPUT --> DISPATCH
     DISPATCH --> PLANNER
     PLANNER -->|无副作用资格边| MATCHER
     MATCHER -->|选中的 Task×Gun| MATERIALIZE
@@ -199,6 +203,8 @@ flowchart TB
     PLAN --> EXECUTOR
     EXECUTOR <--> PRIORITY
     EXECUTOR --> CONTROLS
+    CONTROLUI -. Auto Fire / Max Charge .-> EXECUTOR
+    CONTROLUI -. Max Charge .-> PLANNER
 
     EXECUTOR -->|已接受的装填工作| LOADING
     LOADING --> GUNS
@@ -206,8 +212,7 @@ flowchart TB
     EXECUTOR --> TURRET
     CONTROLS --> CONSOLES
     EXECUTOR -. 槽位释放 / recovery retry .-> DISPATCH
-```
-
+`$([Environment]::NewLine)
 ### 任务生命周期
 
 Pending 中的 **Task 不绑定炮位**。只有经过 Planner / Matcher 选定分配并生成 **FirePlan** 后，任务才确定使用 Left 或 Right。左右炮可以并行完成本地准备；共享炮塔与击发流程由 `current / next` 控制，最终以真实物理击发结果决定消费哪个 FirePlan。

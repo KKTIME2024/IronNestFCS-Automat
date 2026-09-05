@@ -1,4 +1,4 @@
-using System.Collections;
+﻿using System.Collections;
 using Il2Cpp;
 using Il2CppTMPro;
 using MelonLoader;
@@ -285,8 +285,8 @@ public class GunSystem {
         }
         MelonLogger.Warning($"[FCS ReloadTrace] {_surfix}: legacy NextBullet() invoked; completing click synchronously");
         try {
-            FcsSceneInteractor.BeginPhysicalClick(nextBulletButton);
-            FcsSceneInteractor.EndPhysicalClick(nextBulletButton);
+            PhysicalClickHelper.BeginPhysicalClick(nextBulletButton);
+            PhysicalClickHelper.EndPhysicalClick(nextBulletButton);
         }
         catch (Exception ex) {
             MelonLogger.Error($"[FCS] GunSystem {_surfix}: legacy NextBullet click failed: {ex.Message}");
@@ -414,7 +414,7 @@ public class GunSystem {
         yield return FcsRuntimeClock.WaitForSeconds(0.1f);
         yield return FcsRuntimeClock.WaitUntilFocused();
         try {
-            FcsSceneInteractor.BeginPhysicalClick(button);
+            PhysicalClickHelper.BeginPhysicalClick(button);
         }
         catch (Exception ex) {
             FailReloadAction($"reload control click-down failed ({controlName}): {ex.Message}");
@@ -422,10 +422,10 @@ public class GunSystem {
         }
 
         // Once a click starts, always complete the down/up pair even if focus changes in between.
-        // FcsSceneInteractor also tracks the held control so F9/Shutdown can release it if this coroutine stops.
+        // PhysicalClickHelper also tracks the held control so F9/Shutdown can release it if this coroutine stops.
         yield return new WaitForSeconds(0.1f);
         try {
-            FcsSceneInteractor.EndPhysicalClick(button);
+            PhysicalClickHelper.EndPhysicalClick(button);
         }
         catch (Exception ex) {
             FailReloadAction($"reload control click-up failed ({controlName}): {ex.Message}");

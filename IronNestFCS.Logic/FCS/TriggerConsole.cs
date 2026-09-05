@@ -1,4 +1,4 @@
-using System.Collections;
+﻿using System.Collections;
 using Il2Cpp;
 using MelonLoader;
 using UnityEngine;
@@ -188,7 +188,7 @@ public class TriggerConsole {
                 && stillOn != desiredOn;
         }
 
-        yield return FcsSceneInteractor.WaitAndClick(control, 10f, clickGuard);
+        yield return PhysicalClickHelper.WaitAndClick(control, 10f, clickGuard);
         if (shouldContinue != null && !shouldContinue())
             yield break;
 
@@ -210,12 +210,12 @@ public class TriggerConsole {
 
     private static IEnumerator ThrowArm(LookAtTarget arm) {
         yield return FcsRuntimeClock.WaitUntilFocused();
-        FcsSceneInteractor.BeginPhysicalClick(arm);
+        PhysicalClickHelper.BeginPhysicalClick(arm);
 
         // Once an arm action starts, always complete the down/up pair even if focus changes during the hold.
-        // If F9 stops this coroutine, FcsSceneInteractor.ShutDown releases the tracked control before unload.
+        // If F9 stops this coroutine, PhysicalClickHelper.ShutDown releases the tracked control before unload.
         yield return new WaitForSeconds(0.2f);
-        FcsSceneInteractor.EndPhysicalClick(arm);
+        PhysicalClickHelper.EndPhysicalClick(arm);
     }
 
     private static IEnumerator EnsureArmState(LookAtTarget? arm, Transform? pose, bool desiredOn, string name) {
@@ -433,14 +433,14 @@ public class TriggerConsole {
             var held = new List<LookAtTarget>();
             try {
                 foreach (var control in toToggle) {
-                    FcsSceneInteractor.BeginPhysicalClick(control);
+                    PhysicalClickHelper.BeginPhysicalClick(control);
                     held.Add(control);
                 }
                 yield return new WaitForSeconds(0.2f);
             }
             finally {
                 foreach (var control in held.ToArray()) {
-                    try { FcsSceneInteractor.EndPhysicalClick(control); }
+                    try { PhysicalClickHelper.EndPhysicalClick(control); }
                     catch (Exception ex) { MelonLogger.Warning($"[FCS] TriggerConsole: arm click-up failed: {ex.Message}"); }
                 }
             }

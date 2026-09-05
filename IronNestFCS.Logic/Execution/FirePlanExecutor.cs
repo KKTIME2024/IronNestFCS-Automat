@@ -417,7 +417,7 @@ internal sealed class FirePlanExecutor
                     _fcs.TrackCoroutine(TryArmReadyFollowerDuringCurrentWait(followerCandidate));
                 }
 
-                if (_fcs.SceneInteractor.AutoFire)
+                if (_fcs.ControlUi.AutoFire)
                 {
                     yield return FcsRuntimeClock.WaitUntilFocused();
                     _autoFireIssuedForWait = true;
@@ -435,7 +435,7 @@ internal sealed class FirePlanExecutor
 
             // Manual fire is intentionally open-ended. Only an Auto Fire attempt gets a deadline so a failed
             // automation can still recover without turning deliberate wait-and-fire missions into task failures.
-            float? autoFireDeadline = autoFireIssued || _autoFireIssuedForWait || _fcs.SceneInteractor.AutoFire
+            float? autoFireDeadline = autoFireIssued || _autoFireIssuedForWait || _fcs.ControlUi.AutoFire
                 ? FcsRuntimeClock.Now + AutoFireTimeoutSeconds
                 : null;
             var resumeGeneration = FcsRuntimeClock.ResumeGeneration;
@@ -471,7 +471,7 @@ internal sealed class FirePlanExecutor
                     rightWatch = BeginFireWatch(_fcs.RightGun, "Right");
                 }
 
-                if (!autoFireDeadline.HasValue && (_autoFireIssuedForWait || _fcs.SceneInteractor.AutoFire))
+                if (!autoFireDeadline.HasValue && (_autoFireIssuedForWait || _fcs.ControlUi.AutoFire))
                     autoFireDeadline = FcsRuntimeClock.Now + AutoFireTimeoutSeconds;
 
                 if (autoFireDeadline.HasValue && FcsRuntimeClock.Now >= autoFireDeadline.Value)

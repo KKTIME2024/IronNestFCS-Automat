@@ -5,7 +5,8 @@ using IronNestFCS.Logic.Infrastructure;
 namespace IronNestFCS.Logic;
 
 /// <summary>
-/// Reloadable TaskSystem entrypoint. Persistent loading is injected by Host and is never owned/disposed here.
+/// Reloadable TaskSystem entrypoint. Persistent loading and stable control UI are injected by Host and are
+/// never owned/disposed here.
 /// </summary>
 public class FcsModule : IFcsModule
 {
@@ -26,6 +27,14 @@ public class FcsModule : IFcsModule
         FcsDiagnosticLog.MarkBindResult(bound, _fcs.FirePriority.Generation, leftPhysical, rightPhysical);
 
         return bound;
+    }
+
+    public bool TrySubmitTarget(int targetId, ShellTypeCode shell) =>
+        _fcs?.TargetInput.TrySubmitTarget(targetId, shell) ?? false;
+
+    public void OnAutoFireEnabled()
+    {
+        _fcs?.PlanExecutor.OnAutoFireEnabled();
     }
 
     public void Update()

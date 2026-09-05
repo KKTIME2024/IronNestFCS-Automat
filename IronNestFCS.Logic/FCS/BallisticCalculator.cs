@@ -1,4 +1,4 @@
-using System.Collections;
+﻿using System.Collections;
 using Il2Cpp;
 using MelonLoader;
 using UnityEngine;
@@ -156,12 +156,12 @@ public class BallisticCalculator {
             $"input={requestedDistance:F3}km/{requestedDirection:F2}°/{requestedShell}/C{requestedCharge:F0}");
         yield return FcsRuntimeClock.WaitForSeconds(0.1f);
         yield return FcsRuntimeClock.WaitUntilFocused();
-        FcsSceneInteractor.BeginPhysicalClick(calculateButton);
+        PhysicalClickHelper.BeginPhysicalClick(calculateButton);
 
         // Finish an accepted physical click even if focus changes between down and up. The global tracked-click
         // cleanup also guarantees F9 cannot leave Calculate held if this coroutine is stopped during the hold.
         yield return new WaitForSeconds(0.1f);
-        FcsSceneInteractor.EndPhysicalClick(calculateButton);
+        PhysicalClickHelper.EndPhysicalClick(calculateButton);
         lastClickAccepted = true;
         MelonLogger.Msg("[FCS BALLISTIC TRACE] Calculate click completed");
     }

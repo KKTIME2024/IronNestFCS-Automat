@@ -473,7 +473,6 @@ internal sealed class TaskDispatcher
         _recentTasks.Enqueue(task);
         while (_recentTasks.Count > RecentTaskLimit)
             _recentTasks.Dequeue();
-        _fcs.SceneInteractor.TaskFinished(task);
     }
 
     private sealed class MaterializedAssignment

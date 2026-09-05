@@ -33,12 +33,13 @@ Smart 的真正改动是重新定义：
 
 ### Stable Host
 
-Host 必须持有不应该因为 F9 消失的物理过程。
+Host 必须持有不应该因为 F9 消失的稳定运行时。
 
-最重要的是：
+当前包括：
 
 ```text
 PersistentLoadingSystem
+FcsControlPanel / player UI intent
 ```
 
 Host 的核心语义：
@@ -47,6 +48,7 @@ Host 的核心语义：
 Stable Host
 F9 reloads TaskSystem only
 PersistentLoadingSystem stays alive
+FcsControlPanel stays alive
 ```
 
 也就是说：
@@ -71,14 +73,24 @@ Logic 属于可重规划层。
 - Review / Arm / Fire 自动化；
 - 任务失败 / 完成；
 - current / next；
-- 当前 FCS UI 状态。
+- 接收稳定 UI 提交的目标 / 弹种意图。
 
 所以：
 
 ```text
-Host = 现实持续存在
+Host = 现实持续存在 + 玩家控制面板 / UI 意图持续存在
 Logic = 计划可以推翻
 ```
+
+---
+
+## FCS 控制 UI 的稳定边界
+
+F9 只用于放弃并重建 TaskSystem 计划，不应该销毁玩家正在操作的 FCS 控制面板。
+
+因此 world-space 控制 UI 由 Stable Host 持有：弹种选择、AutoFire、MaxCharge 与 T1～T4 按钮对象跨 F9 保持；真实场景切换时才随场景生命周期重建。按钮通过稳定 Host bridge 在点击时调用当前 `IFcsModule`，不能持有旧 Logic 对象或旧 ALC 中的 delegate。
+
+地图 marker 采样、`ArtilleryTask` 创建与 Pending admission 仍属于 reloadable Logic；UI 只提交 `targetId + shell intent`，不替代 Planning。
 
 ---
 

@@ -17,7 +17,8 @@ public enum LeftRight
 }
 
 /// <summary>
-/// Reloadable TaskSystem composition root. Persistent physical loading is injected from the stable Host.
+/// Reloadable TaskSystem composition root. Persistent physical loading and stable player-control state are
+/// injected from the Host; this object owns only replannable task/execution state.
 /// </summary>
 public class FSC
 {
@@ -29,7 +30,8 @@ public class FSC
     private int _lastResumeGeneration;
 
     internal ILoadingSystem Loading { get; }
-    internal FcsSceneInteractor SceneInteractor { get; private set; }
+    internal IFcsControlUi ControlUi { get; }
+    internal TargetSubmissionController TargetInput { get; }
     internal PurchaseDeck PurchaseDeck { get; } = new();
     internal SharedConsoleCoordinator SharedResources { get; }
     internal TaskDispatcher Dispatcher { get; }
@@ -49,8 +51,8 @@ public class FSC
     public int PendingCount => Dispatcher.PendingCount;
     public Queue<ArtilleryTask> QueueCan => Dispatcher.QueueSnapshot;
     public Queue<ArtilleryTask> RecentTasks => Dispatcher.RecentSnapshot;
-    public bool AutoFireEnabled => SceneInteractor.AutoFire;
-    public bool MaxChargeEnabled => SceneInteractor.maxCharge;
+    public bool AutoFireEnabled => ControlUi.AutoFire;
+    public bool MaxChargeEnabled => ControlUi.MaxCharge;
     public int CompletedTaskCount => Dispatcher.CompletedTaskCount;
     public int SuccessfulTaskCount => Dispatcher.SuccessfulTaskCount;
     public int FailedTaskCount => Dispatcher.FailedTaskCount;
@@ -63,7 +65,8 @@ public class FSC
     public FSC(IFcsHostServices hostServices)
     {
         Loading = hostServices.Loading;
-        SceneInteractor = new FcsSceneInteractor(this);
+        ControlUi = hostServices.ControlUi;
+        TargetInput = new TargetSubmissionController(this);
         SharedResources = new SharedConsoleCoordinator(this);
         FirePriority = new FirePriorityCoordinator();
         PlanExecutor = new FirePlanExecutor(this);
@@ -90,7 +93,6 @@ public class FSC
 
     public bool TryBind()
     {
-        SceneInteractor = new FcsSceneInteractor(this);
         _harmony = new HarmonyInstance(HarmonyId);
 
         SharedResources.Reset();
@@ -113,13 +115,16 @@ public class FSC
             MelonLogger.Warning("[FCS] Persistent LoadingSystem is not bound.");
 
         if (IsBound)
+        {
             FcsLocalization.BindGameLanguage();
+            ControlUi.PublishLanguage(FcsLocalization.IsChinese);
+            PublishAvailableShells();
+        }
         FirePriority.Reset();
 
         MelonLogger.Msg("[FCS] Initialize: " + (IsBound ? "success" : "failed"));
         if (IsBound)
         {
-            SceneInteractor.Initialize();
             TrackCoroutine(SharedResources.ResetFireControlsAfterBind());
             TrackCoroutine(TriggerConsole.ReviewStateLoop());
             TrackCoroutine(SharedResources.ReplenishPowderLoop());
@@ -141,12 +146,24 @@ public class FSC
         }
 
         FcsLocalization.TickGameLanguage();
+        ControlUi.PublishLanguage(FcsLocalization.IsChinese);
         if (PurchaseDeck.SyncTick())
-            SceneInteractor.RefreshBulletTypeButtons();
-        SceneInteractor.Update();
+            PublishAvailableShells();
         PlanExecutor.Tick();
         CaptureEstimatedFlightTime(LeftRight.Left);
         CaptureEstimatedFlightTime(LeftRight.Right);
+    }
+
+    private void PublishAvailableShells()
+    {
+        if (!PurchaseDeck.HasCommittedAvailability)
+            return;
+
+        ControlUi.PublishAvailableShells(
+            PurchaseDeck.AvailableBulletTypes
+                .OrderBy(type => (int)type)
+                .Select(type => (ShellTypeCode)(int)type)
+                .ToArray());
     }
 
     private void CaptureEstimatedFlightTime(LeftRight side)
@@ -180,8 +197,7 @@ public class FSC
         FirePriority.Reset();
         TimeToImpactReader.Reset();
         FcsLocalization.ResetGameLanguage();
-
-        SceneInteractor.ShutDown();
+        PhysicalClickHelper.ReleaseHeldPhysicalClicks("logic shutdown/F9");
 
         try { _harmony?.UnpatchSelf(); }
         catch (Exception ex) { MelonLogger.Error($"[FCS] UnpatchSelf failed: {ex}"); }

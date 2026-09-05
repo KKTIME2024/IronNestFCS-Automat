@@ -14,13 +14,13 @@ After you place a target marker on the Tactical Map, IronNestFCS Smart can handl
 
 You choose the targets, ammunition, and task order. Smart executes the plan.
 
-Press **F9** when you want to abandon the current mission plan and build a new one. F9 resets TaskSystem planning and execution state, but it does not pretend that an already accepted physical loading sequence never happened. New missions continue from the guns' real current physical state.
+Press **F9** when you want to abandon the current mission plan and build a new one. F9 reloads the TaskSystem planning/execution layer only: the FCS control panel, selected shell, Auto Fire, Max Charge, and already accepted physical loading stay alive. New missions continue from the guns' real current physical state.
 
 ## Highlights
 
 - Build a T1–T4 mission queue and keep both guns working through it.
 - Tasks that do not match the guns' current loaded shell/charge stay Pending instead of disappearing; later compatible tasks can still be planned.
-- Replan with **F9** without erasing already-started physical loading.
+- Replan with **F9** without erasing already-started physical loading or resetting the FCS control panel.
 - Read the real chamber, loading mechanism, turret and control state before making execution decisions.
 - Calculate ballistics through the game's own ballistic calculator.
 - Quickly reject obvious shell-type or fixed-charge range mismatches before driving the slower in-game ballistic calculator UI.
@@ -132,7 +132,7 @@ Estimated flight time uses measured in-game C1–C6 fixed charge coefficients an
 
 Press **F9** whenever the current plan or queue is wrong. Then reposition the markers and submit new T1–T4 missions.
 
-Important: **F9 resets the plan, not physical reality.** An already accepted shell/powder loading sequence continues. The new plan reads the resulting real chamber, elevation and turret state.
+Important: **F9 resets the plan, not physical reality or player UI intent.** The FCS control panel stays alive, including the selected shell, Auto Fire and Max Charge state. An already accepted shell/powder loading sequence continues, and the new Logic instance reads the resulting real chamber, elevation and turret state.
 
 A task that cannot use the current loaded shell/charge may intentionally remain Pending until the gun state changes. If that task is no longer wanted, use F9 to clear the current TaskSystem plan/queue and submit a new one.
 
@@ -168,37 +168,43 @@ Smart separates the persistent physical Host from the hot-reloadable TaskSystem 
 
 ```mermaid
 flowchart TB
-    PLAYER["Player / Tactical Map<br/>targets · ammunition · T1-T4"]
+    PLAYER["Player / Tactical Map<br/>targets / ammunition / T1-T4"]
 
-    subgraph HOST["Stable Host · survives F9"]
+    subgraph HOST["Stable Host / survives F9"]
+        CONTROLUI["FcsControlPanel<br/>shell / Auto Fire / Max Charge / T1-T4"]
         LOADING["PersistentLoadingSystem<br/>accepted physical loading"]
     end
 
     subgraph LOGIC["Reloadable TaskSystem / Logic"]
-        DISPATCH["TaskDispatcher<br/>Pending · wakeups · admission"]
-        PLANNER["FirePlanner<br/>snapshot · eligibility"]
+        INPUT["TargetSubmissionController<br/>marker sampling / task creation"]
+        DISPATCH["TaskDispatcher<br/>Pending / wakeups / admission"]
+        PLANNER["FirePlanner<br/>snapshot / eligibility"]
         MATCHER["TaskGunMatcher<br/>stateless matching"]
         MATERIALIZE["Selected-only materialization<br/>game ballistic calculator"]
         PLAN["FirePlan"]
         PRIORITY["FirePriorityCoordinator<br/>one-shot order"]
-        EXECUTOR["FirePlanExecutor<br/>left/right slots · current/next"]
-        CONTROLS["SharedConsoleCoordinator / TriggerConsole<br/>Review · Arm · Fire"]
+        EXECUTOR["FirePlanExecutor<br/>left/right slots / current/next"]
+        CONTROLS["SharedConsoleCoordinator / TriggerConsole<br/>Review / Arm / Fire"]
     end
 
-    subgraph REALITY["Game physical reality · authoritative"]
+    subgraph REALITY["Game physical reality / authoritative"]
         GUNS["Chamber / reload mechanism / guns"]
         TURRET["Physical turret"]
         CONSOLES["Physical consoles"]
     end
 
-    PLAYER --> DISPATCH
+    PLAYER --> CONTROLUI
+    CONTROLUI -->|target id + shell intent| INPUT
+    INPUT --> DISPATCH
     DISPATCH --> PLANNER
     PLANNER -->|side-effect-free edges| MATCHER
-    MATCHER -->|selected Task×Gun| MATERIALIZE
+    MATCHER -->|selected Task x Gun| MATERIALIZE
     MATERIALIZE --> PLAN
     PLAN --> EXECUTOR
     EXECUTOR <--> PRIORITY
     EXECUTOR --> CONTROLS
+    CONTROLUI -. Auto Fire / Max Charge .-> EXECUTOR
+    CONTROLUI -. Max Charge .-> PLANNER
 
     EXECUTOR -->|accepted load work| LOADING
     LOADING --> GUNS
@@ -207,7 +213,6 @@ flowchart TB
     CONTROLS --> CONSOLES
     EXECUTOR -. freed slot / recovery retry .-> DISPATCH
 ```
-
 ### Mission lifecycle
 
 A Pending **Task is not bound to a gun**. The Left or Right side becomes fixed only after Planner / Matcher selects an assignment and creates a **FirePlan**. Both guns may perform local preparation in parallel; shared turret and firing work follows `current / next`, while observed physical gunfire determines which FirePlan is actually consumed.

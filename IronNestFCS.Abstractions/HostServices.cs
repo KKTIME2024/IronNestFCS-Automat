@@ -115,7 +115,18 @@ public interface ILoadingSystem
     bool TryRequest(LoadRequest request, out string reason);
 }
 
+public interface IFcsControlUi
+{
+    bool AutoFire { get; }
+    bool MaxCharge { get; }
+
+    void PublishAvailableShells(ShellTypeCode[] shells);
+    void PublishLanguage(bool isChinese);
+    void CompleteTargetSubmission(int targetId);
+}
+
 public interface IFcsHostServices
 {
     ILoadingSystem Loading { get; }
+    IFcsControlUi ControlUi { get; }
 }

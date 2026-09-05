@@ -228,6 +228,8 @@ Smart 对 F9 的定义已经稳定：
 ↓
 清空 FirePlan / current / next / 调度状态
 ↓
+Stable Host 的 FCS 控制面板与玩家 UI 意图保持不变
+↓
 TaskSystem Logic 被销毁并重建
 ↓
 已经被 Host 接受的物理装填事务继续
@@ -259,9 +261,10 @@ TaskSystem Logic 被销毁并重建
 Stable Host
 ├─ FcsHostMod
 ├─ LogicReloader
-└─ PersistentLoadingSystem
+├─ PersistentLoadingSystem
+└─ FcsControlPanel — world-space controls + player UI intent
         │
-        │ ILoadingSystem / IFcsHostServices
+        │ IFcsHostServices / ILoadingSystem / IFcsControlUi
         ▼
 Reloadable Logic
 ├─ FSC — Composition Root
@@ -272,7 +275,8 @@ Reloadable Logic
 ├─ FirePriorityCoordinator
 ├─ FirePlanExecutor
 ├─ SharedConsoleCoordinator
-├─ FcsSceneInteractor
+├─ TargetSubmissionController
+├─ PhysicalClickHelper
 ├─ MapTable
 ├─ BallisticCalculator
 ├─ PurchaseDeck
@@ -315,15 +319,16 @@ flowchart TB
         HOSTMOD["FcsHostMod"]
         RELOADER["LogicReloader"]
         LOADING["PersistentLoadingSystem"]
+        CONTROLUI["FcsControlPanel<br/>Shell · AutoFire · MaxCharge · T1~T4"]
     end
 
     subgraph CONTRACT["IronNestFCS.Abstractions"]
-        API["IFcsHostServices / ILoadingSystem<br/>LoadingSnapshot / LoadRequest"]
+        API["IFcsModule / IFcsHostServices / ILoadingSystem / IFcsControlUi<br/>LoadingSnapshot / LoadRequest"]
     end
 
     subgraph LOGIC["Reloadable TaskSystem｜IronNestFCS.Logic"]
         FSC["FSC<br/>Composition Root"]
-        INPUT["FcsSceneInteractor / MapTable"]
+        INPUT["TargetSubmissionController / MapTable"]
 
         subgraph PLANNING["Planning / Admission"]
             DISPATCH["TaskDispatcher<br/>Pending / Trigger / Retry"]
@@ -348,12 +353,16 @@ flowchart TB
         CONSOLE["Ballistic / Review / Trigger Consoles"]
     end
 
-    PLAYER --> INPUT
+    PLAYER --> CONTROLUI
     PLAYER -. F9 .-> HOSTMOD
     HOSTMOD --> RELOADER
     HOSTMOD --> LOADING
+    HOSTMOD --> CONTROLUI
+    CONTROLUI -->|Host callback| HOSTMOD
     LOADING --> API
+    HOSTMOD -->|current IFcsModule| API
     API --> FSC
+    API -->|TrySubmitTarget| INPUT
     RELOADER -. recreate .-> FSC
 
     FSC --> INPUT

@@ -24,6 +24,7 @@ public class PurchaseDeck {
     private bool _waitingForCardsLogged;
 
     public IReadOnlyCollection<BulletType> AvailableBulletTypes => _availableShellTypes;
+    public bool HasCommittedAvailability => _hasCommittedSnapshot;
 
     public bool HasShell(BulletType type) => _availableShellTypes.Contains(type);
     
@@ -220,7 +221,7 @@ public class PurchaseDeck {
                 GetLeftRightDial().SetDialValue(1);
                 break;
         }
-        yield return FcsSceneInteractor.WaitAndClick(_buyButton);
+        yield return PhysicalClickHelper.WaitAndClick(_buyButton);
         yield return FcsRuntimeClock.WaitForSeconds(2f);
     }
 
@@ -234,7 +235,7 @@ public class PurchaseDeck {
         _powderCard.position = new Vector3(6.4814f, -2.4675f, -22.0968f);
         _powderCard.GetComponent<DraggableItem>().MoveToSlot();
         yield return FcsRuntimeClock.WaitForSeconds(0.5f);
-        yield return FcsSceneInteractor.WaitAndClick(_buyButton);
+        yield return PhysicalClickHelper.WaitAndClick(_buyButton);
         yield return FcsRuntimeClock.WaitForSeconds(2f);
     }
     
