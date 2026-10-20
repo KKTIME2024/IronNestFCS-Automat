@@ -26,6 +26,7 @@ public class FcsHostMod : MelonMod
     private const string LogicTypeName = "IronNestFCS.Logic.FcsModule";
 
     private LogicReloader? reloader;
+    private int sceneGeneration;
 
     public override void OnInitializeMelon()
     {
@@ -49,13 +50,21 @@ public class FcsHostMod : MelonMod
 
     public override void OnSceneWasLoaded(int buildIndex, string sceneName)
     {
-        MelonCoroutines.Start(ReloadCoroutine());
+        MelonCoroutines.Start(ReloadCoroutine(++sceneGeneration));
     }
     
-    private IEnumerator ReloadCoroutine()
+    private IEnumerator ReloadCoroutine(int generation)
     {
-        yield return new WaitForSeconds(3f);
-        reloader?.Reload();
+        yield return new WaitForSecondsRealtime(3f);
+        if (generation != sceneGeneration || reloader == null) yield break;
+        var initialized = reloader.Reload(newScene: true);
+        while (!initialized)
+        {
+            yield return new WaitForSecondsRealtime(2f);
+            if (generation != sceneGeneration || reloader == null) yield break;
+            if (reloader.CurrentInitialized) yield break;
+            initialized = reloader.Reload();
+        }
     }
 
     public override void OnUpdate()
@@ -70,6 +79,7 @@ public class FcsHostMod : MelonMod
             return; // 本帧不再 Update，避免对刚换上的实例做半截调用
         }
 
+        if (!reloader.CurrentInitialized) return;
         try { reloader.Current?.Update(); }
         catch (Exception ex) { MelonLogger.Error($"Logic.Update() exception: {ex}"); }
     }

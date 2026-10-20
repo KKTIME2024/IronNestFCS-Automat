@@ -1,3 +1,5 @@
+using System;
+using System.Linq;
 using System.Collections.Generic;
 using Il2Cpp;
 using IronNestFCS.Abstractions;
@@ -9,7 +11,7 @@ using Object = UnityEngine.Object;
 
 namespace IronNestFCS.Logic;
 
-public class FcsModule : IFcsModule
+public class FcsModule : IFcsModule, IFcsSessionState
 {
     private readonly FSC fcs = new();
     private FcsWindow? window;
@@ -22,31 +24,53 @@ public class FcsModule : IFcsModule
     private float _lastTimeScaleWarn;   // 聚焦但 timeScale=0 警告节流
     private bool autoMode;          // 全自动模式:true=雷达接管;false=手动(雷达完全休眠)
     private bool _emergencyMoveInProgress;  // 转移阵地清理进行中(手动转移; 暂停自动派发, 防炮管被重置后新任务卡死)
+    private const float EmergencyMoveCleanupTimeout = 120f;
+    private float _emergencyMoveStartedAt;
+    private int _emergencyMoveGeneration;
+    private OwnedRoutine? _emergencyMoveCleanupHandle;
+    public string[] CaptureAutomaticExclusions() => fcs.AutomaticExclusions.Snapshot();
+    public void RestoreAutomaticExclusions(string[] ids) => fcs.AutomaticExclusions.Restore(ids);
+    public void RestoreReloadFlightRisk(bool possible) => fcs.RestoreReloadFlightRisk(possible);
 
     /// <summary>玩家手动转移阵地(手动买 MoveZone 卡)后的清理(2026-08-16 用户):
-    /// 游戏照常重置炮管状态, 但我们没采购卡——跳过采购, 复用转移后清理
-    /// (停派/取消任务/清洗炮管/等基准静止), 防任务卡死(玩家反馈 bug)。</summary>
+    /// 游戏照常重置炮管状态, 但我们没采购卡——暂停自动计划并复用转移后清理
+    /// (停派/机构交接/清洗炮管/等基准静止), 防任务卡死(玩家反馈 bug)。</summary>
     private void StartManualMoveCleanup()
     {
         _emergencyMoveInProgress = true;
-        fcs.ClearPendingTasks();
-        if (fcs.LeftTask != null) fcs.LeftTask.Canceled = true;
-        if (fcs.RightTask != null) fcs.RightTask.Canceled = true;
-        fcs.StartTransferCleanup(OnEmergencyMoveDone);
+        _emergencyMoveStartedAt = Time.realtimeSinceStartup;
+        var generation = ++_emergencyMoveGeneration;
+        fcs.PauseAutomaticExecution("阵地移动开始");
+        _emergencyMoveCleanupHandle = fcs.StartTransferCleanup(() => OnEmergencyMoveDone(generation),
+            () => _emergencyMoveInProgress && generation == _emergencyMoveGeneration
+                && Time.realtimeSinceStartup - _emergencyMoveStartedAt < EmergencyMoveCleanupTimeout);
     }
 
     /// <summary>转移后清理完成 → 恢复自动派发。</summary>
-    private void OnEmergencyMoveDone()
+    private void OnEmergencyMoveDone(int generation)
     {
+        // 超时后迟到的回调不能结束下一次转移清理。
+        if (generation != _emergencyMoveGeneration || !_emergencyMoveInProgress) return;
         _emergencyMoveInProgress = false;
+        _emergencyMoveCleanupHandle = null;
         fcs.ResetTransferBaseline();   // 重设检测基准, 防自己触发的移动 82ms 后二次误清理(2026-08-18)
         nextSweepTime = 0;   // 立即补派一轮
+        if (autoMode)
+        {
+            // 先刷新雷达快照，再恢复暂停计划；否则暂停前的距离可能被沿用。
+            radar?.Scan();
+            fcs.ResumeAutomaticExecution();
+        }
         OnGunIdle();
     }
 
     public bool Initialize()
     {
         window = new FcsWindow(fcs);
+        window.ToggleAutoModeRequested = ToggleAutoMode;
+        window.StopRequested = () => fcs.RequestPlayerStop("玩家紧急停止");
+        window.StartAutomaticRequested = StartAutomatic;
+        fcs.PlayerStopRequested += OnPlayerStop;
         radar = new TacticalRadar(fcs);
         overlay = new MapOverlay(fcs);
         fcs.EntityLocator = radar;   // 手动任务目标解析
@@ -60,6 +84,7 @@ public class FcsModule : IFcsModule
     private void OnGunIdle()
     {
         if (!autoMode) return;
+        if (fcs.AutomaticExecutionPaused) return;
         if (Time.time < nextSweepTime) return;
         nextSweepTime = Time.time + 0.5f;
 
@@ -72,23 +97,16 @@ public class FcsModule : IFcsModule
 
         fcs.ClearPendingTasks();   // 只清自动任务, 手动任务保留
 
-        // 逐空闲炮管派发（TryDispatch 按 Left→Right 取队首，入队顺序即分配顺序）。
-        // 派发即登记(Registry.Commit 在 TryDispatch), 同帧双管去重由注册表覆盖,
-        // 在飞窗口约束也由注册表统一承担(炮上/排队/在飞/手动提交的目标全部跳过)。
-        // 2026-08-16: 移除手动弹保护(用户)——膛内有任何弹(含手动装的)都照常派发,
-        // 膛内状态接管(ReadyToFire 复用/退壳重装)统一处理, 不再跳过本管。
+        // 优先为保留整发找合适目标；空管随后使用正常弹种推荐。
         int nextTargetId = 1;
-        foreach (var barrel in new[] { LeftRight.Left, LeftRight.Right })
+        var sides = new[] { LeftRight.Left, LeftRight.Right }.OrderByDescending(side =>
+            (side == LeftRight.Left ? fcs.LeftGun : fcs.RightGun).AssessChamber()
+                == GunSystem.ChamberState.ReadyToFire);
+        foreach (var barrel in sides)
         {
             if (barrel == LeftRight.Left ? fcs.LeftTask != null : fcs.RightTask != null) continue;
-
-            var t = PickTarget();
-            if (t == null) continue;
-            var ti = t.Value;  // TargetInfo 是 struct,Nullable 解包
-
-            // Baseline(2026-08-18 用户, 自 CBT 分支固化): 不走集群(HE/HCHE 面杀伤),
-            // 一律 DRIL 点射; 最低装药; 无基金线。
-            var task = CreateAutoTask(ti, nextTargetId, false, float.MaxValue);
+            var task = PickTaskForGun(barrel, nextTargetId);
+            if (task == null) continue;
             nextTargetId++;
             fcs.EnqueueTask(task);
         }
@@ -123,29 +141,64 @@ public class FcsModule : IFcsModule
         return task;
     }
 
-    /// <summary>
-    /// 挑目标: 注册表(炮上/排队/在飞/手动提交)中的目标跳过, 返回最高优先级可选目标。
-    /// Baseline(2026-08-18 用户, 自 CBT 分支固化): 不打 FDC(无暂停组合拳), 不打装甲/地下
-    /// (DRIL 打不穿, AP 有成本), 无基金线; 其余软目标(火炮>3★>高价值>1-2★)全收, DRIL 点射。
-    /// 全部可选目标都被承包 → 返回 null, 炮管空等; 窗口到期后由周期重扫恢复派发。
-    /// </summary>
-    private TacticalDecider.TargetInfo? PickTarget()
+    private ArtilleryTask? PickTaskForGun(LeftRight side, int targetId)
     {
+        if (radar == null) return null;
+        var gun = side == LeftRight.Left ? fcs.LeftGun : fcs.RightGun;
+        var state = gun.AssessChamber();
+        if (state == GunSystem.ChamberState.Dirty) return null;
+        var retained = state == GunSystem.ChamberState.ReadyToFire;
+        var shell = default(BulletType);
+        if (state != GunSystem.ChamberState.Empty
+            && !Enum.TryParse(gun.BulletInChamber(), out shell)) return null;
+        var charge = gun.ChamberCharges();
         foreach (var t in radar.AliveHostiles)
         {
-            if (fcs.Registry.IsHandled(t.EntityId)) continue;
-            if (fcs.Registry.IsHandledNear(t.WorldPos, 0f)) continue;
-            if (t.IsFdc) continue;
-            if (t.IsArmored || t.IsUnderground) continue;
-            return t;
+            if (fcs.AutomaticExclusions.Contains(t.EntityId)
+                || fcs.Registry.IsHandled(t.EntityId) || fcs.Registry.IsHandledNear(t.WorldPos, 0f)) continue;
+            if (t.IsFdc || t.IsArmored || t.IsUnderground) continue;
+            var task = CreateAutoTask(t, targetId, false, float.MaxValue);
+            task.PreferredSide = side;
+            if (retained)
+            {
+                if (!RetainedAmmoPolicy.CanUse(shell, charge, t.Distance,
+                    t.IsArmored, t.IsUnderground, t.ImmuneShells)) continue;
+                if (radar.AllyPositions.Any(ally => (ally - t.WorldPos).magnitude * ShellData.KmPerWorldUnit
+                    <= ShellData.BlastRadiusKm(shell))) continue;
+                task.bulletType = shell;
+                task.LoadedCharge = charge;
+                task.UsesRetainedRound = true;
+                task.BlastRadiusKm = ShellData.BlastRadiusKm(shell);
+            }
+            else if (state == GunSystem.ChamberState.ShellLoaded && shell != task.bulletType)
+                continue;
+            return task;
         }
         return null;
     }
 
     public void Update()
     {
+        fcs.PointerOverCommandPanel = window?.PointerInsidePanel() ?? false;
         fcs.Update();
         overlay?.Update();   // 地图 overlay: 打击中任务可视化(内部 1Hz 节流)
+
+        if (_emergencyMoveInProgress
+            && Time.realtimeSinceStartup - _emergencyMoveStartedAt >= EmergencyMoveCleanupTimeout)
+        {
+            // 恢复前先停止旧清理，防它稍后继续清洗已交给新计划的炮管。
+            if (_emergencyMoveCleanupHandle != null)
+            {
+                try { _emergencyMoveCleanupHandle.Stop(); }
+                catch (System.Exception ex)
+                {
+                    // 嵌套动作仍受同一个实时授权闸门约束，下一步不会继续执行。
+                    MelonLogger.Error($"[FCS] 停止移动清理句柄失败，旧清理授权已超时: {ex}");
+                }
+            }
+            MelonLogger.Error("[FCS] 阵地移动清理超过 120 秒，停止旧清理并解除模块暂停；未完成炮位交接仍保持隔离");
+            OnEmergencyMoveDone(_emergencyMoveGeneration);
+        }
 
         // 失焦/恢复诊断(2026-08-16 用户: Alt+Tab 后游戏未响应——怀疑失焦暂停 timeScale=0
         // 未恢复的假死)。日志能打 = 假死(Update 还在跑, 可强制恢复 timeScale);
@@ -168,6 +221,7 @@ public class FcsModule : IFcsModule
         if (radar != null && fcs.IsBound && autoMode && Time.time - lastScanTime > 5f)
         {
             lastScanTime = Time.time;
+            radar.Scan();
             OnGunIdle();
         }
 
@@ -211,36 +265,30 @@ public class FcsModule : IFcsModule
 
     }
 
-    /// <summary>切换全自动/手动模式。切手动时清空自动队列(正在打的不打断,打完自然停)。</summary>
+    /// <summary>切手动撤销所有现有执行；AUTO 从实物和当前目标重新规划。</summary>
     private void ToggleAutoMode()
     {
-        autoMode = !autoMode;
-        nextSweepTime = 0;  // 重设时间窗，防止立即触发的首轮被防重入窗口跳过
-        if (!autoMode)
-        {
-            fcs.ClearPendingTasks();   // 只清自动入队的队列, 手动任务保留
-            CancelOrForceFire(fcs.LeftTask);
-            CancelOrForceFire(fcs.RightTask);
-            MelonLogger.Msg("[FCS] 手动模式:雷达休眠,手动标点 T1-T4 接管");
-        }
-        else
-        {
-            OnGunIdle();
-            MelonLogger.Msg("[FCS] 全自动模式:雷达接管");
-        }
-        if (window != null) window.AutoSweepEnabled = autoMode;
+        if (autoMode) fcs.RequestPlayerStop("切回手动，停止现有执行");
+        else StartAutomatic();
     }
 
-    /// <summary>
-    /// 切手动: 自动任务按进度分流——未开始装填(未碰炮膛)的干净取消, 不浪费弹;
-    /// 已进入装填(弹已上膛)的强制击发, 原子化防卡膛。
-    /// 手动任务保持待击发, 由玩家自己拉扳机(WaitFire 等待玩家手动击发)。
-    /// </summary>
-    private static void CancelOrForceFire(ArtilleryTask? task)
+    private void OnPlayerStop()
     {
-        if (task == null || task.Source != TaskSource.Auto) return;
-        if (task.progress < Progress.LoadingBullet) task.Canceled = true;
-        else task.forceFire = true;
+        autoMode = false;
+        nextSweepTime = 0;
+        if (window != null) window.AutoSweepEnabled = false;
+        // 转移清理结束后读取 autoMode，不能越过这次停止重新开火。
+    }
+
+    private void StartAutomatic()
+    {
+        autoMode = true;
+        nextSweepTime = 0;
+        if (window != null) window.AutoSweepEnabled = true;
+        if (_emergencyMoveInProgress) return;
+        radar?.Scan();
+        fcs.ResumeAutomaticExecution();
+        OnGunIdle();
     }
 
     public void OnGui()
@@ -252,6 +300,7 @@ public class FcsModule : IFcsModule
     public void Shutdown()
     {
         fcs.OnGunIdle -= OnGunIdle;
+        fcs.PlayerStopRequested -= OnPlayerStop;
         overlay?.Shutdown();   // 销毁全部 overlay 渲染对象
         fcs.Dispose();
         window = null;

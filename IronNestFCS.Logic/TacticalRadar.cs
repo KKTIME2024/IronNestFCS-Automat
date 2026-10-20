@@ -75,7 +75,7 @@ public class TacticalRadar
         var targets = new List<TacticalDecider.TargetInfo>();
         var aliveIds = new List<string>();
 
-        ForEachEntity((key, me) =>
+        var observationComplete = ForEachEntity((key, me) =>
         {
             if (IsAlive(me)) aliveIds.Add(key);
             // 存活友军坐标 → 集群落点友军禁区检查(不能炸到友军)
@@ -86,7 +86,11 @@ public class TacticalRadar
         });
 
         // 击杀确认: 死亡目标的登记立即解除(打中的目标下轮扫描恢复可拣)
-        fcs.Registry.Reconcile(aliveIds);
+        if (observationComplete)
+        {
+            fcs.Registry.Reconcile(aliveIds);
+            fcs.AutomaticExclusions.ObserveAliveIds(aliveIds);
+        }
 
         TacticalDecider.SortTargets(targets, fcs.Turret.LastSetAngle);
         AliveHostiles = targets;
@@ -116,18 +120,18 @@ public class TacticalRadar
     }
 
     /// <summary>反射枚举 FireMission.Entities, 对每个 MapEntity 回调 (key, MapEntity)。</summary>
-    private void ForEachEntity(Action<string, object> action)
+    private bool ForEachEntity(Action<string, object> action)
     {
         var (fm, entities) = GetEntitiesDict();
-        if (entities == null) return;
+        if (entities == null) return false;
         var getEnum = entities.GetType().GetMethod("GetEnumerator", BindingFlags.Public | BindingFlags.Instance);
-        if (getEnum == null) return;
+        if (getEnum == null) return false;
         var enumerator = getEnum.Invoke(entities, null);
-        if (enumerator == null) return;
+        if (enumerator == null) return false;
         var enumType = enumerator.GetType();
         var moveNext = enumType.GetMethod("MoveNext", BindingFlags.Public | BindingFlags.Instance);
         var currentProp = enumType.GetProperty("Current", BindingFlags.Public | BindingFlags.Instance);
-        if (moveNext == null || currentProp == null) return;
+        if (moveNext == null || currentProp == null) return false;
         while ((bool)moveNext.Invoke(enumerator, null)!)
         {
             var kvp = currentProp.GetValue(enumerator);
@@ -141,6 +145,7 @@ public class TacticalRadar
             if (me == null) continue;
             action(key, me);
         }
+        return true;
     }
 
     private static bool IsAlive(object me)
@@ -315,6 +320,20 @@ public class TacticalRadar
             if (d < best) { best = d; nearest = key; }
         });
         return nearest;
+    }
+
+    /// <summary>直接复核实体仍存活、敌对且位置可解析；不依赖休眠前的雷达缓存或速度采样。</summary>
+    public bool TryGetLiveHostilePosition(string entityId, out Vector3 position)
+    {
+        var found = false;
+        var livePosition = Vector3.zero;
+        ForEachEntity((key, me) =>
+        {
+            if (key != entityId || !IsAlive(me) || !IsHostileRole(GetRole(me))) return;
+            found = TryGetWorldPos(me, out livePosition);
+        });
+        position = livePosition;
+        return found;
     }
 
     /// <summary>

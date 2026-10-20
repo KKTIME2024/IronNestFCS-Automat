@@ -1,0 +1,26 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v6.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v6.0": {
+      "IronNestFCS/1.0.0": {
+        "dependencies": {
+          "IronNestFCS.Abstractions": "1.0.0"
+        },
+        "runtime": {
+          "IronNestFCS.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "IronNestFCS/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

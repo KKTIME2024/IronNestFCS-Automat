@@ -23,7 +23,8 @@
 ### 运行时
 - MelonCoroutines 全部**主线程协作式调度** → 无真并发，bool 锁够用；
   **绝不能用 async/Task.Delay**（continuation 在线程池恢复，跨线程访问 IL2CPP 直接崩溃）。
-- 协程被 Stop（热重载）时 finally 照常执行 → 锁必须 try/finally 释放。
+- 当前 IL2CPP MelonLoader 的 Stop 只停止调度，不会 Dispose 托管迭代器。
+  Logic 协程必须通过 `OwnedRoutine` 保存并显式 Dispose；嵌套动作由 `CancellableRoutine` 展开，锁仍用 try/finally 按持有者释放。
 - 热重载：Dispose 停全部协程、`UnpatchSelf`、清 IL2CPP 引用；
   同一 IL2CPP 类型进程内只能注册一次。
 - `ReleaseTurretOnce` 的 `Released` = "主流程结束占用"（无论是否持锁）；

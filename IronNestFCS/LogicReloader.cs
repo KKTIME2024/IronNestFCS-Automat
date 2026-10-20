@@ -20,8 +20,11 @@ internal sealed class LogicReloader
     private WeakReference? alcWeakRef;
 
     public IFcsModule? Current => current;
+    public bool CurrentInitialized { get; private set; }
 
     private DateTime lastWriteTime;
+    private string[] excludedTargets = Array.Empty<string>();
+    private readonly ReloadFlightState reloadFlightState = new();
 
     public LogicReloader(string logicDllPath, string logicTypeName)
     {
@@ -37,9 +40,14 @@ internal sealed class LogicReloader
     }
 
     /// <summary>卸载当前 Logic（若有），从磁盘重新加载并初始化。</summary>
-    public bool Reload()
+    public bool Reload(bool newScene = false)
     {
+        reloadFlightState.BeginReload(CurrentInitialized, newScene);
         Unload();
+        if (newScene)
+        {
+            excludedTargets = Array.Empty<string>();
+        }
 
         if (!File.Exists(logicDllPath))
         {
@@ -85,8 +93,14 @@ internal sealed class LogicReloader
             }
 
             current = module;
+            if (module is IFcsSessionState session)
+            {
+                session.RestoreAutomaticExclusions(excludedTargets);
+                session.RestoreReloadFlightRisk(reloadFlightState.Possible);
+            }
             lastWriteTime = File.GetLastWriteTime(logicDllPath);
             var ok = current.Initialize();
+            CurrentInitialized = ok;
             if (!ok)
             {
                 MelonLogger.Warning("[Reload] Logic.Initialize() returns false。");
@@ -109,8 +123,14 @@ internal sealed class LogicReloader
     /// <summary>关闭当前 Logic 并卸载其 AssemblyLoadContext。</summary>
     public void Unload()
     {
+        CurrentInitialized = false;
         if (current != null)
         {
+            if (current is IFcsSessionState session)
+            {
+                try { excludedTargets = session.CaptureAutomaticExclusions(); }
+                catch (Exception ex) { MelonLogger.Error($"[Reload] Capture session state failed: {ex}"); }
+            }
             try { current.Shutdown(); }
             catch (Exception ex) { MelonLogger.Error($"[Reload] Logic.Shutdown() exception: {ex}"); }
             current = null;

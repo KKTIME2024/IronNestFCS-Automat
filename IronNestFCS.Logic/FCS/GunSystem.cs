@@ -47,6 +47,11 @@ public class GunSystem {
     private LinearSliderInteractable? elevationLever;
     private OdometerDisplay? remainingCharges;
 
+    /// <summary>最近一次 WaitFire 是否观察到真实 pendingReload。超时保持 false。</summary>
+    public bool LastFireConfirmed { get; private set; }
+    /// <summary>最近一次 WaitBackToIdle 是否观察到机构真实回位。超时保持 false。</summary>
+    public bool LastBackToIdleConfirmed { get; private set; }
+
     private TextMeshPro shellId;
 
     public bool TryBind(string surfix) {
@@ -132,12 +137,15 @@ public class GunSystem {
     /// ReadyToFire 判定: CanFire=true 且无 pendingReload(击发后等待退壳) → 整发可复用。
     /// </summary>
     public ChamberState AssessChamber() {
-        if (gunController == null) return ChamberState.Empty;
-        var inChamber = BulletInChamber();
+        if (gunController == null || reloadController == null || !MechanismSettled() || IsPendingReload())
+            return ChamberState.Dirty;
+        if (!TryReadChamber(out var inChamber)) return ChamberState.Dirty;
         if (inChamber == null)
-            return ChamberState.Empty;   // 膛空(不管装药残留——装药残留不阻碍装填, 且库存读数不可靠)
-        if (CanFire() && !IsPendingReload())
+            return IsLoadReady() ? ChamberState.Empty : ChamberState.Dirty;   // 膛空(不管装药残留——装药残留不阻碍装填, 且库存读数不可靠)
+        if (CanFire() && ChamberCharges() is >= 1 and <= 6)
             return ChamberState.ReadyToFire;   // 完全就绪, 直接打
+        // 选药档不证明药已入膛；非就绪状态存在选药或读数未知时禁止重复推药。
+        if (!ReloadIdle() || ChamberCharges() != 0) return ChamberState.Dirty;
         return ChamberState.ShellLoaded;       // 弹在膛但未就绪(半装填)
     }
 
@@ -147,27 +155,30 @@ public class GunSystem {
     }
 
     /// <summary>
-    /// 膛内实际装药数(已选并推入的装药档)。来自 PowderChargeController.currentSelectedCharges
-    /// (private 字段, 反射读)。注意与库存区分: PowderChargeInventory._currentCharges 是装药库存
-    /// (开局 40 包), 不是膛内装药——2026-08-15 实测教训。读取失败返回 -1(无法确认)。
-    /// PowderChargeController 引用缓存(热重载后失效重找), 避免每次 GameObject.Find 全场景搜索。
+    /// 读取膛内 ShellBlueprint.currentPowderCharge；选药控制器的档位和库存都不是实际装药。
+    /// 缺少炮管或读数异常返回 -1；明确没有膛内弹头时为 0。
     /// </summary>
-    private PowderChargeController? _cachedPowderCtrl;
 
     public int ChamberCharges() {
         try {
-            if (_cachedPowderCtrl == null)
-            {
-                var reloadingConsole = GameObject.Find("Gun System " + _surfix)?.transform.Find("--Reloading Console");
-                if (reloadingConsole == null) return -1;
-                _cachedPowderCtrl = reloadingConsole.GetComponentInChildren<PowderChargeController>();
-            }
-            if (_cachedPowderCtrl == null) return -1;
-            var f = _cachedPowderCtrl.GetType().GetField("currentSelectedCharges",
-                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-            return f?.GetValue(_cachedPowderCtrl) is int n ? n : -1;
+            if (gunController == null) return -1;
+            var shell = gunController.ChamberedShellBlueprint;
+            if (shell == null) return 0;
+            return shell.currentPowderCharge;
         }
         catch { return -1; }
+    }
+
+    public string ExecutionState()
+    {
+        try
+        {
+            var readable = TryReadChamber(out var shell);
+            return $"chamber={(readable ? shell ?? "empty" : "unknown")} state={AssessChamber()} "
+                + $"reload={CurrentReloadState} idle={ReloadIdle()} loadReady={IsLoadReady()} "
+                + $"pendingReload={IsPendingReload()} canFire={CanFire()} charges={ChamberCharges()}";
+        }
+        catch (Exception ex) { return $"unreadable: {ex.Message}"; }
     }
 
     /// <summary>炮管是否为"脏状态"(残留弹)。注意: 只用可靠信号判定——
@@ -303,9 +314,25 @@ public class GunSystem {
     public string? BulletInChamber() {
         return gunController?.ChamberedShellBlueprint?.shellDefinition?.ShellId?.Replace("PLCM", "PCLM");
     }
+
+    public bool TryReadChamber(out string? shell)
+    {
+        shell = null;
+        try
+        {
+            if (gunController == null) return false;
+            var blueprint = gunController.ChamberedShellBlueprint;
+            if (blueprint == null) return true;
+            var id = blueprint.shellDefinition?.ShellId;
+            if (string.IsNullOrEmpty(id)) return false;
+            shell = id.Replace("PLCM", "PCLM");
+            return true;
+        }
+        catch { return false; }
+    }
     
     public bool IsChamberEmpty() {
-        return BulletInChamber() == null;
+        return TryReadChamber(out var shell) && shell == null;
     }
 
     private void RefreshBullets() {
@@ -455,12 +482,11 @@ public class GunSystem {
     /// <summary>炮管是否"可接下一任务"(机构空闲 且 [膛内有弹 或 可装填])。
     /// 与 IsLoadReady 的区别: 膛内已有整发(装填完毕)也算就绪——RunTaskRoutine 的膛内状态
     /// 评估会按弹种复用或退壳重装, 不需要先清洗。</summary>
-    public bool IsTaskReady()
-    {
-        if (!ReloadIdle()) return false;
-        if (!IsChamberEmpty()) return true;
-        return IsLoadReady();
-    }
+    public bool IsTaskReady() => AssessChamber() != ChamberState.Dirty;
+
+    /// <summary>合栓是物理配置，不等于机构正在运动。</summary>
+    public bool MechanismSettled() => gunController != null && reloadController != null
+        && !reloadController.working && gunController.elevationChangeVelocity == 0;
 
     /// <summary>炮管是否处于"立刻可装填"就绪态(机构空闲 + 游戏 CanLoadBullet)。紧急移动后派发门用。</summary>
     public bool IsLoadReady()
@@ -500,6 +526,7 @@ public class GunSystem {
     }
 
     public IEnumerator WaitBackToIdle() {
+        LastBackToIdleConfirmed = false;
         // 保留原来的 13 秒最小恢复窗口，但同时要求正式版装填机构真正结束工作。
         // 这样下一任务不会只因为炮管停止运动就过早进入装填。
         // （上游 svr2kos2 3951d055 移植）
@@ -511,22 +538,30 @@ public class GunSystem {
             var mechanismReady = reloadController == null || !reloadController.working;
             var breechReady = !gunController.ExternalReloadLoweringLocked;
             var motionReady = gunController.elevationChangeVelocity == 0;
-            if (minimumDelayDone && mechanismReady && breechReady && motionReady)
+            if (minimumDelayDone && mechanismReady && breechReady && motionReady
+                && IsChamberEmpty() && !IsPendingReload()) {
+                LastBackToIdleConfirmed = true;
                 yield break;
+            }
 
             yield return new WaitForSeconds(0.1f);
         }
     }
 
     public IEnumerator WaitFire() {
+        LastFireConfirmed = false;
+        if (gunController == null)
+            yield break;
+
         // 超时兜底(2026-08-18): 空炮/状态粘连时 pendingReload 可能永不置位 →
         // 无超时死等会把任务卡死在看门狗上限; 30s 强制放行, 由下一任务膛内评估兜底。
         var deadline = Time.realtimeSinceStartup + 30f;
-        while (gunController != null && !gunController.pendingReload && Time.realtimeSinceStartup < deadline) {
+        while (!gunController.pendingReload && Time.realtimeSinceStartup < deadline) {
             yield return new WaitForSeconds(0.1f);
         }
-        if (!gunController.pendingReload && Time.realtimeSinceStartup >= deadline)
-            MelonLogger.Error($"[FCS] GunSystem {_surfix}: WaitFire 30s 超时, pendingReload 未置位(状态粘连?), 继续");
+        LastFireConfirmed = gunController.pendingReload;
+        if (!LastFireConfirmed)
+            MelonLogger.Error($"[FCS] GunSystem {_surfix}: WaitFire 30s 超时, pendingReload 未置位(状态粘连?), 结果交给上层恢复");
     }
 
     /// <summary>非阻塞: 设仰角杆目标值, 不等待。连续跟踪每帧调用。</summary>
@@ -537,7 +572,7 @@ public class GunSystem {
 
     /// <summary>当前仰角(度)与目标差。就绪判定用。</summary>
     public float ElevationError(float target) {
-        if (gunController == null) return 0f;
+        if (gunController == null) return float.PositiveInfinity;
         return Mathf.Abs(gunController.CurrentElevation - target);
     }
 

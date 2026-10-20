@@ -1,6 +1,5 @@
-using System.Linq;
+using System;
 using IronNestFCS.Logic.FCS;
-using MelonLoader;
 using UnityEngine;
 
 namespace IronNestFCS.Logic;
@@ -8,142 +7,144 @@ namespace IronNestFCS.Logic;
 public class FcsWindow
 {
     private readonly FSC fcs;
-
-    private bool showWindow = true;
-    private Rect panelRect = new(20, 20, 290, 140);
-
-    private static readonly Color ClrTitle = new(0.96f, 0.65f, 0.14f);
-    private static readonly Color ClrLabel = new(0.72f, 0.65f, 0.55f);
-    private static readonly Color ClrIdle = new(0.35f, 0.50f, 0.35f);
-    private static readonly Color ClrActive = new(0.27f, 0.72f, 0.82f);
-    private static readonly Color ClrWarning = new(0.96f, 0.65f, 0.14f);
-    private static readonly Color ClrFailed = new(0.83f, 0.18f, 0.18f);
-    private static readonly Color ClrGreen = new(0.18f, 0.62f, 0.35f);
-    private static readonly Color ClrDiv = new(0.33f, 0.22f, 0.14f);
-    private static readonly Color ClrSweep = new(0.96f, 0.35f, 0.14f);
-
+    private Rect panelRect = new(18, 18, 310, 116);
+    private bool expanded;
+    private LeftRight? confirmUnload;
+    private string actionMessage = "";
     public bool AutoSweepEnabled { get; set; }
+    public Action? ToggleAutoModeRequested { get; set; }
+    public Action? StopRequested { get; set; }
+    public Action? StartAutomaticRequested { get; set; }
 
     public FcsWindow(FSC fcs) => this.fcs = fcs;
 
+    public bool PointerInsidePanel()
+    {
+        var mouse = UnityEngine.InputSystem.Mouse.current;
+        if (mouse == null) return false;
+        var position = mouse.position.ReadValue();
+        return panelRect.Contains(new Vector2(position.x, Screen.height - position.y));
+    }
+
     public void OnGui()
     {
-        if (!showWindow) return;
-
-        float h = 22f;
-        float lineH = h + 2f;
-
-        float extra = 0f;
-        if (fcs.LeftTask != null) extra += lineH * 3;
-        else extra += lineH;
-        if (fcs.RightTask != null) extra += lineH * 3;
-        else extra += lineH;
-        extra += lineH * (fcs.PendingCount + 1);
-        extra += 12f;
-
-        panelRect.height = 140f + extra;
-
+        const float row = 24;
+        float x = panelRect.x + 8, y = panelRect.y + 6, w = panelRect.width - 16;
+        var extraRows = expanded ? 3 + fcs.PendingCount : 0;
+        if (expanded && fcs.AutomaticExclusions.Count > 0) extraRows++;
+        if (expanded && actionMessage.Length > 0) extraRows++;
+        if (fcs.UnobservedFlightPossible || (AutoSweepEnabled && fcs.AutomaticExecutionPaused)
+            || fcs.TriggerConsole.RecoveryPending) extraRows++;
+        else if (AutoSweepEnabled && fcs.ExecutionBlockReason.Length > 0) extraRows++;
+        if (fcs.LeftTask?.FireResultUnknown == true) extraRows++;
+        if (fcs.RightTask?.FireResultUnknown == true) extraRows++;
+        panelRect.height = 108 + row * extraRows;
         GUI.Box(panelRect, "");
-
-        float x = panelRect.x + 8f;
-        float w = panelRect.width - 16f;
-        float y = panelRect.y + 4f;
-
-        var oldColor = GUI.color;
-        GUI.color = ClrTitle;
-        GUI.Label(new Rect(x, y, w, h), "IronNestFCS-Automat");
-        GUI.color = oldColor;
-        y += lineH;
-
-        GUI.color = AutoSweepEnabled ? ClrSweep : ClrLabel;
-        GUI.Label(new Rect(x, y, w, h), AutoSweepEnabled ? "[AUTO]" : "[MANUAL]");
-        GUI.color = oldColor;
-        y += lineH;
-
-
-        DrawDivider(x, y, w);
-        y += 4f;
-
+        GUI.Label(new Rect(x, y, 42, 22), "FCS");
+        if (GUI.Button(new Rect(x + 48, y, w - 146, 22), AutoSweepEnabled ? "AUTO" : "MANUAL"))
+            ToggleAutoModeRequested?.Invoke();
+        if (GUI.Button(new Rect(x + w - 92, y, 60, 22), "STOP")) StopRequested?.Invoke();
+        if (GUI.Button(new Rect(x + w - 28, y, 28, 22), expanded ? "-" : "+"))
+        {
+            expanded = !expanded;
+            confirmUnload = null;
+        }
+        y += row;
         if (!fcs.IsBound)
         {
-            GUI.Label(new Rect(x, y, w, h), "Waiting for scene...");
-            y += lineH;
-            GUI.Label(new Rect(x, y, w, h), "Press F9 to reload");
+            GUI.Label(new Rect(x, y, w, 22), "Waiting for scene");
             return;
         }
+        DrawGun("L", fcs.LeftTask, x, y, w);
+        y += row;
+        DrawGun("R", fcs.RightTask, x, y, w);
+        y += row;
+        GUI.Label(new Rect(x, y, w, 22), $"Queue {fcs.PendingCount}");
+        y += row;
 
-        y = DrawGunRow("Left  ", fcs.LeftTask, x, y, w, h, lineH);
-        DrawDivider(x, y, w);
-        y += 4f;
-        y = DrawGunRow("Right ", fcs.RightTask, x, y, w, h, lineH);
-        DrawDivider(x, y, w);
-        y += 4f;
-
-        GUI.color = ClrLabel;
-        GUI.Label(new Rect(x, y, w, h), $"Queue: {fcs.PendingCount}");
-        GUI.color = oldColor;
-        y += lineH;
-
-        foreach (var item in fcs.QueueCan)
+        if (fcs.UnobservedFlightPossible)
         {
-            string maxChargeTag = item.useMaxCharge ? " [MAX]" : "";
-            string itemName = string.IsNullOrEmpty(item.entityName) ? item.entityId : item.entityName;
-            GUI.Label(new Rect(x, y, w, h),
-                $"  {itemName}  {item.bulletType}  {item.angel,5:F1}°/{item.distance,5:F2}km{maxChargeTag}");
-            y += lineH;
+            if (GUI.Button(new Rect(x, y, w, 22), "After reload: confirm flight clear / resume"))
+            {
+                if (fcs.AcknowledgeReloadSafety() && AutoSweepEnabled) StartAutomaticRequested?.Invoke();
+            }
+            y += row;
         }
+        else if (AutoSweepEnabled && fcs.AutomaticExecutionPaused)
+        {
+            if (GUI.Button(new Rect(x, y, w, 22), "Restart automatic from current state")) StartAutomaticRequested?.Invoke();
+            y += row;
+        }
+        else if (fcs.TriggerConsole.RecoveryPending)
+        {
+            GUI.Label(new Rect(x, y, w, 22), "Waiting for disarm confirmation");
+            y += row;
+        }
+        else if (AutoSweepEnabled && fcs.ExecutionBlockReason.Length > 0)
+        {
+            GUI.Label(new Rect(x, y, w, 22), fcs.ExecutionBlockReason);
+            y += row;
+        }
+        y = DrawUnknown(LeftRight.Left, fcs.LeftTask, x, y, w);
+        y = DrawUnknown(LeftRight.Right, fcs.RightTask, x, y, w);
+        if (!expanded) return;
+
+        y = DrawCancel(fcs.LeftTask, "L", x, y, w);
+        y = DrawCancel(fcs.RightTask, "R", x, y, w);
+        foreach (var task in fcs.QueueCan) y = DrawCancel(task, "Queued", x, y, w);
+        DrawUnload(LeftRight.Left, x, y, w / 2 - 3);
+        DrawUnload(LeftRight.Right, x + w / 2 + 3, y, w / 2 - 3);
+        y += row;
+        if (fcs.AutomaticExclusions.Count > 0)
+        {
+            if (GUI.Button(new Rect(x, y, w, 22), $"Restore excluded targets ({fcs.AutomaticExclusions.Count})"))
+                fcs.AutomaticExclusions.Clear();
+            y += row;
+        }
+        if (actionMessage.Length > 0) GUI.Label(new Rect(x, y, w, 22), actionMessage);
     }
 
-    private float DrawGunRow(string label, ArtilleryTask? task, float x, float y, float w, float h, float lineH)
+    private void DrawGun(string side, ArtilleryTask? task, float x, float y, float w)
     {
-        var oldColor = GUI.color;
-
-        if (task == null)
-        {
-            GUI.color = ClrIdle;
-            GUI.Label(new Rect(x, y, w, h), $"{label} Idle");
-            GUI.color = oldColor;
-            return y + lineH;
-        }
-
-        Color stateColor = task.progress switch
-        {
-            Progress.Failed => ClrFailed,
-            Progress.Finished => ClrGreen,
-            Progress.Pending => ClrLabel,
-            Progress.Canceled => ClrLabel,
-            _ => ClrActive
-        };
-
-        GUI.color = stateColor;
-        string movingTag = task.IsMoving ? " [MOV]" : "";
-        GUI.Label(new Rect(x, y, w, h), $"{label} T{task.targetId}  {task.bulletType}  {task.progress}{movingTag}");
-        GUI.color = oldColor;
-        y += lineH;
-
-        // 目标: 名称(MapEntity.Name, 空回退 entityId) + 方位角/距离(2026-08-17 用户: 补回方位角+目标名称)
-        string targetName = string.IsNullOrEmpty(task.entityName) ? task.entityId : task.entityName;
-        GUI.color = ClrLabel;
-        GUI.Label(new Rect(x + 12f, y, w - 12f, h),
-            $"{targetName}  {task.angel:F1}° / {task.distance:F2}km");
-        GUI.color = oldColor;
-        y += lineH;
-
-        string chargeInfo = task.useMaxCharge ? "MAX" : BallisticCalculator.MinimumCharge(task.distance).ToString();
-        GUI.color = ClrWarning;
-        GUI.Label(new Rect(x + 12f, y, w - 12f, h),
-            $"Charge: {chargeInfo} pks");
-        GUI.color = oldColor;
-        y += lineH;
-
-        return y;
+        var gun = side == "L" ? fcs.LeftGun : fcs.RightGun;
+        var status = task == null ? IdleGunStatus(gun) : task.progress.ToString();
+        var target = task == null ? "" : $"  {task.entityName} {task.distance:F1}km";
+        GUI.Label(new Rect(x, y, w, 22), $"{side}  {status}{target}");
     }
 
-    private static void DrawDivider(float x, float y, float w)
+    private string IdleGunStatus(GunSystem gun)
     {
-        var oldColor = GUI.color;
-        GUI.color = ClrDiv;
-        GUI.Label(new Rect(x, y, w, 1f), "");
-        GUI.color = oldColor;
+        var state = gun.AssessChamber();
+        if (state == GunSystem.ChamberState.Empty) return "Idle";
+        if (state == GunSystem.ChamberState.ReadyToFire)
+            return $"Retained {gun.BulletInChamber()} + {gun.ChamberCharges()}"
+                + (AutoSweepEnabled ? " / waiting for suitable target" : "");
+        return "Check chamber / loading mechanism";
+    }
+
+    private float DrawUnknown(LeftRight side, ArtilleryTask? task, float x, float y, float w)
+    {
+        if (task?.FireResultUnknown != true) return y;
+        if (GUI.Button(new Rect(x, y, w, 22), $"{side}: check empty chamber / take over"))
+            fcs.TryAcknowledgeUnknownFire(side);
+        return y + 24;
+    }
+
+    private float DrawCancel(ArtilleryTask? task, string label, float x, float y, float w)
+    {
+        if (task != null && !task.Fired && !task.FireResultUnknown)
+        {
+            if (GUI.Button(new Rect(x, y, w, 22), $"Cancel {label}: {task.entityName}"))
+                fcs.RevokeTask(task, "玩家取消计划");
+        }
+        return y + 24;
+    }
+
+    private void DrawUnload(LeftRight side, float x, float y, float w)
+    {
+        if (!GUI.Button(new Rect(x, y, w, 22), confirmUnload == side ? "Confirm ammo loss" : $"Unload {side}")) return;
+        if (confirmUnload != side) { confirmUnload = side; return; }
+        actionMessage = fcs.RequestUnload(side) ? $"{side}: unloading" : $"{side}: mechanism busy";
+        confirmUnload = null;
     }
 }

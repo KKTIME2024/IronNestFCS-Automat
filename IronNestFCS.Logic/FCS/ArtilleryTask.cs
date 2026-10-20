@@ -11,6 +11,8 @@ public enum Progress {
     WaitLoading,
     Aiming,
     WaitingForFire,
+    /// <summary>扳机请求已提交，但机构尚未给出可靠的出膛结果；禁止复用炮位。</summary>
+    FirePending,
     BackToIdle,
     Finished,
     Failed,
@@ -28,12 +30,44 @@ public class ArtilleryTask {
     public Progress progress;
     /// <summary>为 true 时强制满装药量(6包)，覆盖用户全局 maxCharge 设置</summary>
     public bool useMaxCharge;
-    /// <summary>切手动后置位:已开始装填的任务必须发射出去(原子化),击发段无视 AutoFire 自动开火</summary>
+    /// <summary>遗留兼容字段；停止时清除，不能覆盖击发授权</summary>
     public bool forceFire;
     /// <summary>任务来源: 雷达自动 or 玩家手动(手动任务不被自动清队列清掉)</summary>
     public TaskSource Source = TaskSource.Auto;
     /// <summary>切手动时置位: 未开始装填的自动任务干净放弃, 不碰炮膛</summary>
     public bool Canceled;
+    /// <summary>
+    /// 当前炮位占用的代次。任务结束、看门狗恢复或热重载后的旧回调只能清理仍由自己持有的代次。
+    /// 0 表示尚未派给炮位。
+    /// </summary>
+    public long SlotLeaseId;
+    /// <summary>执行授权代次；停止后旧任务永久失效，不记录装填进度。</summary>
+    public long ExecutionGeneration;
+    /// <summary>按现场保留弹规划的自动任务只交给这门炮。</summary>
+    public LeftRight? PreferredSide;
+    public bool UsesRetainedRound;
+    /// <summary>已越过扳机提交边界；停止后仅允许观察结果。</summary>
+    public bool TriggerSubmitted;
+    /// <summary>计划层身份；自动单发也使用隐式计划，避免执行器只认炮位。</summary>
+    public long PlanId;
+    /// <summary>计划修订号。改派后旧回调不得再授予击发许可。</summary>
+    public int PlanRevision;
+    /// <summary>明确绑定的共享扳机组；0 表示单发，不能因方位偶然接近而齐射。</summary>
+    public long SharedTriggerGroupId;
+    /// <summary>提交给执行器的击发授权。取消／暂停时先撤销授权，再处理机构交接。</summary>
+    public bool FireAuthorized = true;
+    /// <summary>取消或进入恢复状态的可见原因。</summary>
+    public string CancelReason = "";
+    /// <summary>自动模式暂停留下的可恢复计划；与明确取消区分。</summary>
+    public bool Paused;
+    /// <summary>从自动暂停恢复后仍需保留的队列计划，防周期扫荡把它当成普通候选清掉。</summary>
+    public bool PreserveAfterPause;
+    /// <summary>已通过控制台姿态回读确认武装。只要为 true，炮位释放前必须完成解除武装交接。</summary>
+    public bool ArmConfirmed;
+    /// <summary>扳机请求已提交但出膛未知；保留目标登记和炮位，禁止自动重发或复用机构。</summary>
+    public bool FireResultUnknown;
+    /// <summary>进入出膛未知状态的游戏时刻，供目标登记的未知观察窗口使用。</summary>
+    public float FireResultUnknownAt;
     /// <summary>已击发(Registry 飞行窗口计时依据; 未击发的任务结束时 Release 登记)</summary>
     public bool Fired;
     /// <summary>解算后置位: 射表估计飞行时间(秒)。面板倒计时依据, 归零=估计落地。</summary>
@@ -65,4 +99,15 @@ public class ArtilleryTask {
     /// <summary>移动集群落点相对领队的偏移(世界单位): 停车采纳时落点 = 领队当前位置 + 偏移,
     /// 保持车列几何不变(落点仍在车列中点)——否则落点跳车头, 覆盖判定与爆炸错位(5 节只炸前 3 节)。</summary>
     public Vector3 ClusterOffset;
+
+    public bool MayFire => !Canceled && !Paused && FireAuthorized;
+    public bool ShouldReleaseTargetOnExit => !Paused && !TriggerSubmitted && !Fired && !FireResultUnknown;
+
+    public void RevokeFireAuthorization(string reason)
+    {
+        FireAuthorized = false;
+        forceFire = false;
+        Canceled = true;
+        CancelReason = reason ?? "";
+    }
 }

@@ -1,6 +1,7 @@
 using System.Collections;
 using Il2Cpp;
 using Il2CppTMPro;
+using IronNestFCS.Abstractions;
 using IronNestFCS.Logic.FCS;
 using MelonLoader;
 using UnityEngine;
@@ -13,6 +14,8 @@ public class FcsSceneInteractor {
 
     private List<GameObject> destroyOnShutdown = new();
     private readonly ClickRaycaster clicks = new();
+    private readonly List<OwnedRoutine> delayedActions = new();
+    private bool shuttingDown;
 
     // 当前选中的弹种（两管炮共享，由调度器决定任务派到哪管炮）。
     public BulletType selectedBulletType = BulletType.HE;
@@ -114,10 +117,13 @@ public class FcsSceneInteractor {
                 fcs.EnqueueTask(task);
                 SetColor(button, Color.gray);
                 button.GetComponent<Collider>().enabled = false;
-                MelonCoroutines.Start(InvokeDelay(() => {
+                var delayed = new OwnedRoutine(InvokeDelay(() => {
+                    if (shuttingDown || button == null) return;
                     SetColor(button, Color.red);
                     button.GetComponent<Collider>().enabled = true;
-                }, 1f));
+                }, 1f), MelonCoroutines.Stop, completed => delayedActions.Remove(completed));
+                delayedActions.Add(delayed);
+                delayed.Start(MelonCoroutines.Start);
             }, Color.red);
             button.transform.position = new Vector3(x, y, z);
             button.transform.localScale = Vector3.one * 0.02f;
@@ -148,10 +154,35 @@ public class FcsSceneInteractor {
     }
 
     public void Update() {
+        DetectPlayerTakeover();
         clicks.Update();
     }
 
+    private void DetectPlayerTakeover()
+    {
+        if (fcs.PointerOverCommandPanel) return;
+        var mouse = UnityEngine.InputSystem.Mouse.current;
+        var camera = Camera.main;
+        if (mouse == null || camera == null || !mouse.leftButton.wasPressedThisFrame) return;
+        var point = mouse.position.ReadValue();
+        var ray = camera.ScreenPointToRay(new Vector3(point.x, point.y, 0f));
+        if (!Physics.Raycast(ray, out var hit, 1000f) || hit.collider == null
+            || hit.collider.GetComponentInParent<LookAtTarget>() == null) return;
+        for (var node = hit.collider.transform; node != null; node = node.parent)
+        {
+            if (!node.name.StartsWith("Gun System") && node.name != "TurretSystem"
+                && !node.name.StartsWith(".ArmingLeverParent") && node.name != ".Review Console Parent") continue;
+            fcs.RequestPlayerStop("玩家接管原作机构，停止现有执行");
+            break;
+        }
+    }
+
     public void ShutDown() {
+        shuttingDown = true;
+        foreach (var handle in delayedActions.ToArray())
+            try { handle.Stop(); }
+            catch (Exception ex) { MelonLogger.Error($"[FCS] Stop delayed UI action failed: {ex}"); }
+        delayedActions.Clear();
         clicks.Clear();
         foreach (var obj in destroyOnShutdown) {
             Object.Destroy(obj);
@@ -246,9 +277,12 @@ public class FcsSceneInteractor {
             yield return new WaitForSeconds(0.1f);
         }
         yield return new WaitForSeconds(0.1f);
-        button.OnClickDown();
-        yield return new WaitForSeconds(0.1f);
-        button.OnClickUp();
+        try
+        {
+            button.OnClickDown();
+            yield return new WaitForSeconds(0.1f);
+        }
+        finally { button.OnClickUp(); }
     }
     
     public static IEnumerator InvokeDelay(Action action, float delay) {

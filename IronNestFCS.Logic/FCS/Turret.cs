@@ -48,7 +48,7 @@ public class Turret {
     /// 读实际值而非期望值——设目标后物理未响应的瞬态(velocity=0 但未转)不再误判"已收敛"。
     /// rotationVelocity!=0 返回 180 防"转动中扫过目标角"的瞬态误判。转到位 = 实际方位==目标。</summary>
     public float AngleError(float targetAngle) {
-        if (_turret == null) return 0f;
+        if (_turret == null) return 180f;
         if (_turret.rotationVelocity != 0f) return 180f;   // 仍在转 → 未就绪
         float d = Mathf.Abs(_turret.CurrentAngle + targetAngle) % 360f;
         return d > 180f ? 360f - d : d;

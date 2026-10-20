@@ -64,8 +64,12 @@ public class BallisticCalculator {
     }
 
     public IEnumerator Calculate() {
-        calculateButton?.OnClickDown();
-        yield return new WaitForSeconds(0.5f);
+        try
+        {
+            calculateButton?.OnClickDown();
+            yield return new WaitForSeconds(0.5f);
+        }
+        finally { calculateButton?.OnClickUp(); }
     }
     
     public float GetElevation() {

@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\IronNestFCS\ReloadFlightState.cs" Link="ReloadFlightState.cs" />
+    <Compile Include="..\..\IronNestFCS.Logic\FCS\ToFTable.cs" Link="ToFTable.cs" />
+    <Compile Include="..\..\IronNestFCS.Abstractions\ExecutionLeaseLedger.cs" Link="ExecutionLeaseLedger.cs" />
+    <Compile Include="..\..\IronNestFCS.Abstractions\CancellableRoutine.cs" Link="CancellableRoutine.cs" />
+    <Compile Include="..\..\IronNestFCS.Abstractions\OwnedRoutine.cs" Link="OwnedRoutine.cs" />
+    <Compile Include="..\..\IronNestFCS.Logic\FCS\ArtilleryTask.cs" Link="ArtilleryTask.cs" />
+    <Compile Include="..\..\IronNestFCS.Logic\FCS\FirePlan.cs" Link="FirePlan.cs" />
+    <Compile Include="..\..\IronNestFCS.Logic\FCS\TargetRegistry.cs" Link="TargetRegistry.cs" />
+    <Compile Include="..\..\IronNestFCS.Logic\FCS\ShellData.cs" Link="ShellData.cs" />
+    <Compile Include="..\..\IronNestFCS.Logic\FCS\TargetLeadSolver.cs" Link="TargetLeadSolver.cs" />
+    <Compile Include="..\..\IronNestFCS.Logic\FCS\CoroutineLock.cs" Link="CoroutineLock.cs" />
+    <Compile Include="..\..\IronNestFCS.Logic\FCS\AutomaticTargetExclusions.cs" Link="AutomaticTargetExclusions.cs" />
+    <Compile Include="..\..\IronNestFCS.Logic\FCS\ExecutionControl.cs" Link="ExecutionControl.cs" />
+    <Compile Include="..\..\IronNestFCS.Logic\FCS\RetainedAmmoPolicy.cs" Link="RetainedAmmoPolicy.cs" />
+    <Compile Include="..\..\IronNestFCS.Logic\FCS\SingleShotGate.cs" Link="SingleShotGate.cs" />
+  </ItemGroup>
+</Project>

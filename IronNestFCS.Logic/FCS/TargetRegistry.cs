@@ -41,7 +41,10 @@ public sealed class TargetRegistry
             Pos = pos;
         }
 
-        public bool IsExpired => Fired && Time.time - FiredAt > FlightWindow;
+        public bool IsExpired => (Fired && Time.time - FiredAt > FlightWindow)
+            || (Owner.FireResultUnknown
+                && Owner.FireResultUnknownAt > 0f
+                && Time.time - Owner.FireResultUnknownAt > FlightWindow);
     }
 
     /// <summary>登记目标。自动任务在派发时调用; 手动任务在入队时调用(队列存活不被清)。幂等。
@@ -49,6 +52,10 @@ public sealed class TargetRegistry
     /// 几何屏蔽(IsHandledNear)拦不住, 不按实体登记会在装填期被雷达重复派发(同目标双任务)。</summary>
     public void Commit(ArtilleryTask task)
     {
+        // “幂等”也要清掉同一任务旧的几何条目；暂停后重新取位时，
+        // 不能让旧位置和新位置同时继续屏蔽雷达。已出膛记录不再重建。
+        if (!task.Fired && !task.FireResultUnknown)
+            Release(task);
         if (task.entityId is { Length: > 0 } id)
             _byEntity[id] = new Entry(task, id, task.position);
         else
@@ -64,7 +71,12 @@ public sealed class TargetRegistry
     /// <summary>击发后调用: 启动飞行窗口计时。</summary>
     public void MarkFired(ArtilleryTask task)
     {
-        if (Find(task) is { } e) { e.Fired = true; e.FiredAt = Time.time; }
+        foreach (var e in _byEntity.Values.Concat(_positions))
+        {
+            if (e.Owner != task) continue;
+            e.Fired = true;
+            e.FiredAt = Time.time;
+        }
     }
 
     /// <summary>按实体登记移动集群覆盖成员(派发时由 Commit 调用): 在飞屏蔽与爆区几何无关
